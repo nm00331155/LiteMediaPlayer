@@ -1,8 +1,30 @@
-# Compiled class file
-*.class
+# ------------------------------------------------------------
+# OS / Editor junk
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
 
-# Log file
-*.log
+# VS Code (allow shared workspace config only)
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# ------------------------------------------------------------
+# Java / Kotlin artifacts
+# ------------------------------------------------------------
+*.class
 
 # BlueJ files
 *.ctxt
@@ -10,7 +32,7 @@
 # Mobile Tools for Java (J2ME)
 .mtj.tmp/
 
-# Package Files #
+# Package files
 *.jar
 *.war
 *.nar
@@ -19,9 +41,72 @@
 *.tar.gz
 *.rar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+# Kotlin Gradle plugin data
+.kotlin/
+.kotlinc/
+
+# ------------------------------------------------------------
+# Gradle / Android build outputs
+# ------------------------------------------------------------
+.gradle/
+
+# Build folders (root + modules)
+build/
+**/build/
+
+# Android generated folders
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local SDK path (machine-specific)
+local.properties
+
+# APK / AAB / packaged artifacts
+*.apk
+*.aab
+*.ap_
+*.aar
+
+# Native / profiling artifacts
+*.hprof
+
+# ------------------------------------------------------------
+# Logs / reports
+# ------------------------------------------------------------
+*.log
 hs_err_pid*
 replay_pid*
 
-# Kotlin Gradle plugin data, see https://kotlinlang.org/docs/whatsnew20.html#new-directory-for-kotlin-data-in-gradle-projects
-.kotlin/
+# ------------------------------------------------------------
+# Secrets / credentials
+# ------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+
+# Common cloud/mobile secret config files
+google-services.json
+firebase-service-account*.json
+
+# ------------------------------------------------------------
+# Python helper script artifacts (if used in this repo)
+# ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ------------------------------------------------------------
+# Test / coverage outputs
+# ------------------------------------------------------------
+coverage/
+.coverage
+htmlcov/
+*.lcov

@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">LiteMedia Player</string>
+    <string name="tab_player">プレイヤー</string>
+    <string name="tab_comic">コミック</string>
+    <string name="tab_network">ネットワーク</string>
+    <string name="tab_settings">設定</string>
+</resources>
