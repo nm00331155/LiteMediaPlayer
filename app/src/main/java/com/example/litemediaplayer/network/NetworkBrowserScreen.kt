@@ -39,6 +39,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -204,6 +205,18 @@ class NetworkBrowserViewModel @Inject constructor(
 
             networkServerDao.upsert(input.toEntity())
             postStatus("サーバーを保存しました")
+        }
+    }
+
+    fun updateServer(serverId: Long, input: NetworkServerInput) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (input.name.isBlank() || input.host.isBlank()) {
+                postStatus("サーバー名とホストは必須です")
+                return@launch
+            }
+
+            networkServerDao.upsert(input.toEntity().copy(id = serverId))
+            postStatus("接続先を更新しました")
         }
     }
 
@@ -740,6 +753,7 @@ fun NetworkBrowserScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var editingServerId by rememberSaveable { mutableStateOf<Long?>(null) }
 
     var name by rememberSaveable { mutableStateOf("") }
     var protocol by rememberSaveable { mutableStateOf(Protocol.SMB) }
@@ -860,6 +874,7 @@ fun NetworkBrowserScreen(
                     input = input,
                     isTesting = uiState.isTesting,
                     servers = uiState.servers,
+                    editingServerId = editingServerId,
                     onProtocolChange = { protocol = it },
                     onNameChange = { name = it },
                     onHostChange = { host = it },
@@ -870,8 +885,15 @@ fun NetworkBrowserScreen(
                     onPasswordChange = { password = it },
                     onTestConnection = { viewModel.testConnection(input) },
                     onSave = {
-                        viewModel.saveServer(input)
+                        val targetId = editingServerId
+                        if (targetId != null) {
+                            viewModel.updateServer(targetId, input)
+                        } else {
+                            viewModel.saveServer(input)
+                        }
+
                         if (name.isNotBlank() && host.isNotBlank()) {
+                            editingServerId = null
                             name = ""
                             host = ""
                             port = ""
@@ -882,7 +904,29 @@ fun NetworkBrowserScreen(
                         }
                     },
                     onConnect = viewModel::connectToServer,
-                    onDelete = viewModel::deleteServer
+                    onDelete = viewModel::deleteServer,
+                    onEdit = { server ->
+                        editingServerId = server.id
+                        protocol = runCatching { Protocol.valueOf(server.protocol) }
+                            .getOrDefault(Protocol.SMB)
+                        name = server.name
+                        host = server.host
+                        port = server.port?.toString().orEmpty()
+                        shareName = server.shareName.orEmpty()
+                        basePath = server.basePath.orEmpty()
+                        username = server.username.orEmpty()
+                        password = server.password.orEmpty()
+                    },
+                    onCancelEdit = {
+                        editingServerId = null
+                        name = ""
+                        host = ""
+                        port = ""
+                        shareName = ""
+                        basePath = ""
+                        username = ""
+                        password = ""
+                    }
                 )
 
                 Text(
@@ -979,6 +1023,7 @@ private fun NetworkServerEditor(
     input: NetworkServerInput,
     isTesting: Boolean,
     servers: List<NetworkServer>,
+    editingServerId: Long?,
     onProtocolChange: (Protocol) -> Unit,
     onNameChange: (String) -> Unit,
     onHostChange: (String) -> Unit,
@@ -990,7 +1035,9 @@ private fun NetworkServerEditor(
     onTestConnection: () -> Unit,
     onSave: () -> Unit,
     onConnect: (NetworkServer) -> Unit,
-    onDelete: (NetworkServer) -> Unit
+    onDelete: (NetworkServer) -> Unit,
+    onEdit: (NetworkServer) -> Unit,
+    onCancelEdit: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1006,7 +1053,10 @@ private fun NetworkServerEditor(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("サーバー追加", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = if (editingServerId != null) "接続先を編集" else "接続先を追加",
+                        style = MaterialTheme.typography.titleMedium
+                    )
 
                     OutlinedTextField(
                         value = input.name,
@@ -1073,7 +1123,12 @@ private fun NetworkServerEditor(
                             Text(if (isTesting) "テスト中..." else "接続テスト")
                         }
                         Button(onClick = onSave) {
-                            Text("保存")
+                            Text(if (editingServerId != null) "更新" else "保存")
+                        }
+                        if (editingServerId != null) {
+                            OutlinedButton(onClick = onCancelEdit) {
+                                Text("キャンセル")
+                            }
                         }
                     }
                 }
@@ -1109,7 +1164,10 @@ private fun NetworkServerEditor(
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = { onConnect(server) }) {
-                                Text("開く")
+                                Text("接続")
+                            }
+                            Button(onClick = { onEdit(server) }) {
+                                Text("編集")
                             }
                             Button(onClick = { onDelete(server) }) {
                                 Text("削除")

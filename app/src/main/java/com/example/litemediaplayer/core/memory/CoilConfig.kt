@@ -10,8 +10,8 @@ object CoilConfig {
     fun buildImageLoader(context: Context): ImageLoader {
         return ImageLoader.Builder(context)
             .components {
-                add(VideoFrameDecoder.Factory())
                 add(SafVideoThumbnailFetcher.Factory(context))
+                add(VideoFrameDecoder.Factory())
             }
             .memoryCache {
                 MemoryCache.Builder(context)

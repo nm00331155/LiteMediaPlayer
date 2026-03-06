@@ -78,13 +78,13 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import coil.request.videoFrameMillis
 import com.example.litemediaplayer.R
 import com.example.litemediaplayer.core.ui.PageSettingsSheet
 import com.example.litemediaplayer.settings.PlayerResizeMode
@@ -363,6 +363,14 @@ fun PlayerPlaybackScreen(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
             }
+
+            override fun onPlayerError(error: PlaybackException) {
+                android.util.Log.e(
+                    "PlayerPlayback",
+                    "Playback error: ${error.errorCodeName}",
+                    error
+                )
+            }
         }
         exoPlayer.addListener(listener)
 
@@ -394,8 +402,13 @@ fun PlayerPlaybackScreen(
     }
 
     LaunchedEffect(videoUri) {
-        val target = runCatching { Uri.decode(videoUri).toUri() }
+        val target = runCatching { Uri.parse(videoUri) }
             .getOrElse { videoUri.toUri() }
+
+        android.util.Log.d(
+            "PlayerPlayback",
+            "Playing URI: $target (scheme=${target.scheme})"
+        )
 
         exoPlayer.setMediaItem(MediaItem.fromUri(target))
         exoPlayer.prepare()
@@ -426,7 +439,8 @@ fun PlayerPlaybackScreen(
         }
     }
 
-    val videoTitle = Uri.decode(videoUri).substringAfterLast('/')
+    val videoTitle = Uri.parse(videoUri).lastPathSegment
+        ?: videoUri.substringAfterLast('/')
 
     Box(
         modifier = Modifier
@@ -668,7 +682,9 @@ private fun PlayerVideoItem(
     val thumbnailModel = remember(video.uri) {
         ImageRequest.Builder(context)
             .data(video.uri)
-            .videoFrameMillis(1_000)
+            .size(320, 180)
+            .memoryCacheKey("video_thumb_${video.uri}")
+            .diskCacheKey("video_thumb_${video.uri}")
             .crossfade(true)
             .build()
     }

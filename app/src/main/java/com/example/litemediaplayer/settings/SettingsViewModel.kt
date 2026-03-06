@@ -292,6 +292,7 @@ class SettingsViewModel @Inject constructor(
     fun updateLanguage(language: AppLanguage) {
         viewModelScope.launch {
             appSettingsStore.updateLanguage(language)
+            LocaleHelper.applyLanguage(context, language)
         }
     }
 

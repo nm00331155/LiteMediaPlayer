@@ -1,6 +1,7 @@
 package com.example.litemediaplayer.core.memory
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -22,14 +23,31 @@ class SafVideoThumbnailFetcher(
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult = withContext(Dispatchers.IO) {
-        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            context.contentResolver.loadThumbnail(uri, Size(320, 180), null)
-        } else {
+        val bitmap = tryLoadThumbnail()
+            ?: throw IOException("Failed to load thumbnail for $uri")
+
+        DrawableResult(
+            drawable = BitmapDrawable(context.resources, bitmap),
+            isSampled = true,
+            dataSource = DataSource.DISK
+        )
+    }
+
+    private fun tryLoadThumbnail(): Bitmap? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                return context.contentResolver.loadThumbnail(uri, Size(320, 180), null)
+            } catch (_: Exception) {
+                // 次の方法にフォールバック
+            }
+        }
+
+        try {
             context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                 val retriever = MediaMetadataRetriever()
                 try {
                     retriever.setDataSource(pfd.fileDescriptor)
-                    retriever.getFrameAtTime(
+                    return retriever.getFrameAtTime(
                         1_000_000,
                         MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                     )
@@ -37,16 +55,26 @@ class SafVideoThumbnailFetcher(
                     runCatching { retriever.release() }
                 }
             }
+        } catch (_: Exception) {
+            // 次の方法にフォールバック
         }
 
-        val drawable = bitmap?.let { BitmapDrawable(context.resources, it) }
-            ?: throw IOException("Thumbnail failed")
+        try {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(context, uri)
+                return retriever.getFrameAtTime(
+                    1_000_000,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                )
+            } finally {
+                runCatching { retriever.release() }
+            }
+        } catch (_: Exception) {
+            // 全方法失敗
+        }
 
-        DrawableResult(
-            drawable = drawable,
-            isSampled = false,
-            dataSource = DataSource.DISK
-        )
+        return null
     }
 
     class Factory(private val context: Context) : Fetcher.Factory<Uri> {

@@ -5,6 +5,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,10 +19,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -41,10 +45,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.example.litemediaplayer.R
 import com.example.litemediaplayer.core.ui.PageSettingsSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,6 +63,7 @@ fun ComicShelfScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showAddMenu by rememberSaveable { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -100,27 +108,51 @@ fun ComicShelfScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("コミック") },
+                title = {
+                    Text(
+                        text = stringResource(id = R.string.tab_comic),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 actions = {
-                    Button(onClick = { folderPicker.launch(null) }) {
-                        Icon(Icons.Default.Add, contentDescription = null)
-                        Text("フォルダ")
-                    }
-                    Button(
-                        onClick = {
-                            archivePicker.launch(
-                                arrayOf(
-                                    "application/zip",
-                                    "application/vnd.comicbook+zip",
-                                    "application/vnd.rar",
-                                    "application/x-rar-compressed",
-                                    "application/octet-stream"
-                                )
+                    Box {
+                        IconButton(onClick = { showAddMenu = true }) {
+                            Icon(Icons.Default.Add, contentDescription = "追加")
+                        }
+                        DropdownMenu(
+                            expanded = showAddMenu,
+                            onDismissRequest = { showAddMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("フォルダを追加") },
+                                onClick = {
+                                    showAddMenu = false
+                                    folderPicker.launch(null)
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.FolderOpen, contentDescription = null)
+                                }
                             )
-                        },
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    ) {
-                        Text("ZIP/CBZ/CBR")
+                            DropdownMenuItem(
+                                text = { Text("ZIP/CBZ/CBRを追加") },
+                                onClick = {
+                                    showAddMenu = false
+                                    archivePicker.launch(
+                                        arrayOf(
+                                            "application/zip",
+                                            "application/vnd.comicbook+zip",
+                                            "application/vnd.rar",
+                                            "application/x-rar-compressed",
+                                            "application/octet-stream"
+                                        )
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.FolderZip, contentDescription = null)
+                                }
+                            )
+                        }
                     }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "コミック設定")
