@@ -4,4 +4,23 @@
     <string name="tab_comic">コミック</string>
     <string name="tab_network">ネットワーク</string>
     <string name="tab_settings">設定</string>
+    <string name="settings_theme">テーマ</string>
+    <string name="settings_language">言語</string>
+    <string name="theme_light">ライト</string>
+    <string name="theme_dark">ダーク</string>
+    <string name="theme_system">システムに従う</string>
+    <string name="language_system">システムに従う</string>
+    <string name="language_ja">日本語</string>
+    <string name="language_en">English</string>
+    <string name="settings_memory">メモリ設定</string>
+    <string name="settings_lock">ロック設定</string>
+    <string name="settings_app_info">アプリ情報</string>
+    <string name="settings_rotation">画面回転</string>
+    <string name="network_servers">サーバー</string>
+    <string name="network_connect_test">接続テスト</string>
+    <string name="network_downloads">ダウンロード</string>
+    <string name="player_folders">フォルダ</string>
+    <string name="player_settings">プレイヤー設定</string>
+    <string name="comic_settings">コミック設定</string>
+    <string name="network_settings">ネットワーク設定</string>
 </resources>

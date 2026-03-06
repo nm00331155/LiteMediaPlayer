@@ -73,6 +73,9 @@ data class AppSettingsState(
     val cleanupIntervalMinutes: Int = 15,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val language: AppLanguage = AppLanguage.SYSTEM,
+    val subtitleAutoLoad: Boolean = true,
+    val playerPanelLocked: Boolean = false,
+    val playerOrientationLocked: Boolean = false,
     val maxConcurrentDownloads: Int = 2,
     val wifiOnlyDownload: Boolean = false,
     val downloadLocationUri: String? = null,
@@ -117,6 +120,9 @@ class AppSettingsStore @Inject constructor(
                 language = prefs[Keys.LANGUAGE]
                     ?.toEnumOrDefault(AppLanguage.SYSTEM)
                     ?: AppLanguage.SYSTEM,
+                subtitleAutoLoad = prefs[Keys.SUBTITLE_AUTO_LOAD] ?: true,
+                playerPanelLocked = prefs[Keys.PLAYER_PANEL_LOCKED] ?: false,
+                playerOrientationLocked = prefs[Keys.PLAYER_ORIENTATION_LOCKED] ?: false,
                 maxConcurrentDownloads = (prefs[Keys.MAX_CONCURRENT_DOWNLOADS] ?: 2).coerceIn(1, 5),
                 wifiOnlyDownload = prefs[Keys.WIFI_ONLY_DOWNLOAD] ?: false,
                 downloadLocationUri = prefs[Keys.DOWNLOAD_LOCATION_URI],
@@ -214,6 +220,24 @@ class AppSettingsStore @Inject constructor(
         }
     }
 
+    suspend fun updateSubtitleAutoLoad(enabled: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.SUBTITLE_AUTO_LOAD] = enabled
+        }
+    }
+
+    suspend fun updatePlayerPanelLocked(locked: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.PLAYER_PANEL_LOCKED] = locked
+        }
+    }
+
+    suspend fun updatePlayerOrientationLocked(locked: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.PLAYER_ORIENTATION_LOCKED] = locked
+        }
+    }
+
     suspend fun updateMaxConcurrentDownloads(value: Int) {
         context.appSettingsDataStore.edit { prefs ->
             prefs[Keys.MAX_CONCURRENT_DOWNLOADS] = value.coerceIn(1, 5)
@@ -260,6 +284,9 @@ private object Keys {
     val CLEANUP_INTERVAL: Preferences.Key<Int> = intPreferencesKey("cleanup_interval")
     val THEME_MODE: Preferences.Key<String> = stringPreferencesKey("theme_mode")
     val LANGUAGE: Preferences.Key<String> = stringPreferencesKey("language")
+    val SUBTITLE_AUTO_LOAD: Preferences.Key<Boolean> = booleanPreferencesKey("subtitle_auto_load")
+    val PLAYER_PANEL_LOCKED: Preferences.Key<Boolean> = booleanPreferencesKey("player_panel_locked")
+    val PLAYER_ORIENTATION_LOCKED: Preferences.Key<Boolean> = booleanPreferencesKey("player_orientation_locked")
     val MAX_CONCURRENT_DOWNLOADS: Preferences.Key<Int> = intPreferencesKey("max_concurrent_downloads")
     val WIFI_ONLY_DOWNLOAD: Preferences.Key<Boolean> = booleanPreferencesKey("wifi_only_download")
     val DOWNLOAD_LOCATION_URI: Preferences.Key<String> = stringPreferencesKey("download_location_uri")

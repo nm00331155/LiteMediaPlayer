@@ -150,7 +150,11 @@ fun AppNavigation() {
             }
 
             composable(MainTab.NETWORK.route) {
-                NetworkBrowserScreen()
+                NetworkBrowserScreen(
+                    onPlayVideo = { streamUri ->
+                        navController.navigate("player_playback/${Uri.encode(streamUri)}")
+                    }
+                )
             }
 
             composable(MainTab.SETTINGS.route) {

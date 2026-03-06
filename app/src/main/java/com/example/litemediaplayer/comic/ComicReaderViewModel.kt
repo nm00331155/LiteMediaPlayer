@@ -10,6 +10,7 @@ import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.github.junrar.Archive
 import com.example.litemediaplayer.data.ComicBook
 import com.example.litemediaplayer.data.ComicBookDao
 import com.example.litemediaplayer.data.LockConfigDao
@@ -194,6 +195,90 @@ class ComicReaderViewModel @Inject constructor(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun updateReadingDirection(direction: ReadingDirection) {
+        viewModelScope.launch {
+            comicSettings.updateReadingDirection(direction)
+        }
+    }
+
+    fun updateReaderMode(mode: ReaderMode) {
+        viewModelScope.launch {
+            comicSettings.updateMode(mode)
+        }
+    }
+
+    fun updatePageAnimation(animation: PageAnimation) {
+        viewModelScope.launch {
+            comicSettings.updateAnimation(animation)
+        }
+    }
+
+    fun updateAnimationSpeed(speedMs: Int) {
+        viewModelScope.launch {
+            comicSettings.updateAnimationSpeed(speedMs)
+        }
+    }
+
+    fun updateBlueLightFilter(enabled: Boolean) {
+        viewModelScope.launch {
+            comicSettings.updateBlueLightFilter(enabled)
+        }
+    }
+
+    fun updateZoomMax(maxZoom: Float) {
+        viewModelScope.launch {
+            comicSettings.updateZoomMax(maxZoom)
+        }
+    }
+
+    fun updateAutoSplit(enabled: Boolean) {
+        viewModelScope.launch {
+            comicSettings.updateAutoSplit(enabled)
+        }
+    }
+
+    fun updateSplitThreshold(threshold: Float) {
+        viewModelScope.launch {
+            comicSettings.updateSplitThreshold(threshold)
+        }
+    }
+
+    fun updateSmartSplit(enabled: Boolean) {
+        viewModelScope.launch {
+            comicSettings.updateSmartSplit(enabled)
+        }
+    }
+
+    fun updateSplitOffset(offset: Float) {
+        viewModelScope.launch {
+            comicSettings.updateSplitOffset(offset)
+        }
+    }
+
+    fun updateAutoTrim(enabled: Boolean) {
+        viewModelScope.launch {
+            comicSettings.updateAutoTrim(enabled)
+        }
+    }
+
+    fun updateTrimTolerance(tolerance: Int) {
+        viewModelScope.launch {
+            comicSettings.updateTrimTolerance(tolerance)
+        }
+    }
+
+    fun updateTrimSafetyMargin(margin: Int) {
+        viewModelScope.launch {
+            comicSettings.updateTrimSafetyMargin(margin)
+        }
+    }
+
+    fun updateTrimSensitivity(sensitivity: TrimSensitivity) {
+        viewModelScope.launch {
+            comicSettings.updateTrimSensitivity(sensitivity)
+        }
+    }
+
     private fun registerSource(
         sourceUri: Uri,
         sourceType: String,
@@ -251,30 +336,15 @@ class ComicReaderViewModel @Inject constructor(
     ): List<ComicPage> {
         val archiveUri = archiveUriString.toUri()
         val fileName = resolveDisplayName(archiveUri).lowercase(Locale.getDefault())
-        if (fileName.endsWith(".cbr")) {
-            _uiState.update { it.copy(errorMessage = "CBR はこの実装では未対応です") }
-            return emptyList()
-        }
 
         val cacheDir = File(context.cacheDir, "comic_archive_pages")
         cacheDir.mkdirs()
         cacheDir.listFiles()?.forEach { it.deleteRecursively() }
 
-        context.contentResolver.openInputStream(archiveUri)?.use { input ->
-            ZipInputStream(input).use { zipStream ->
-                var entry = zipStream.nextEntry
-                while (entry != null) {
-                    val name = entry.name
-                    if (!entry.isDirectory && name.hasImageExtension()) {
-                        val outFile = File(cacheDir, sanitizeFileName(name))
-                        FileOutputStream(outFile).use { output ->
-                            zipStream.copyTo(output)
-                        }
-                    }
-                    zipStream.closeEntry()
-                    entry = zipStream.nextEntry
-                }
-            }
+        if (fileName.endsWith(".cbr") || fileName.endsWith(".rar")) {
+            extractRarImages(archiveUri, cacheDir)
+        } else {
+            extractZipImages(archiveUri, cacheDir)
         }
 
         val pages = cacheDir.listFiles()
@@ -403,6 +473,73 @@ class ComicReaderViewModel @Inject constructor(
         val dir = File(context.cacheDir, "comic_processed_pages")
         dir.mkdirs()
         return dir
+    }
+
+    private suspend fun extractZipImages(
+        archiveUri: Uri,
+        outputDir: File
+    ) = withContext(Dispatchers.IO) {
+        context.contentResolver.openInputStream(archiveUri)?.use { input ->
+            ZipInputStream(input).use { zipStream ->
+                var entry = zipStream.nextEntry
+                while (entry != null) {
+                    val name = entry.name
+                    if (!entry.isDirectory && name.hasImageExtension()) {
+                        val outFile = File(outputDir, sanitizeFileName(name))
+                        FileOutputStream(outFile).use { output ->
+                            zipStream.copyTo(output)
+                        }
+                    }
+                    zipStream.closeEntry()
+                    entry = zipStream.nextEntry
+                }
+            }
+        }
+    }
+
+    private suspend fun extractRarImages(
+        archiveUri: Uri,
+        outputDir: File
+    ) = withContext(Dispatchers.IO) {
+        val tempRar = File(outputDir, "source_${System.nanoTime()}.rar")
+        val copied = runCatching {
+            context.contentResolver.openInputStream(archiveUri)?.use { input ->
+                FileOutputStream(tempRar).use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }.isSuccess
+
+        if (!copied || !tempRar.exists()) {
+            _uiState.update { it.copy(errorMessage = "CBRの読み込みに失敗しました") }
+            return@withContext
+        }
+
+        runCatching {
+            Archive(tempRar).use { archive ->
+                var header = archive.nextFileHeader()
+                var index = 0
+
+                while (header != null) {
+                    val entryName = header.fileNameString ?: "entry_$index"
+                    if (!header.isDirectory && entryName.hasImageExtension()) {
+                        val outFile = File(
+                            outputDir,
+                            sanitizeFileName("$index-$entryName")
+                        )
+                        FileOutputStream(outFile).use { output ->
+                            archive.extractFile(header, output)
+                        }
+                        index += 1
+                    }
+                    header = archive.nextFileHeader()
+                }
+            }
+        }.onFailure {
+            _uiState.update { it.copy(errorMessage = "CBRの展開に失敗しました") }
+        }
+
+        runCatching { tempRar.delete() }
     }
 
     private fun resolveDisplayName(uri: Uri): String {

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,8 +27,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lock
@@ -45,6 +46,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -85,10 +87,9 @@ import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import com.example.litemediaplayer.R
 import com.example.litemediaplayer.core.ui.PageSettingsSheet
-import com.example.litemediaplayer.lock.LockTarget
-import com.example.litemediaplayer.lock.LockTargetType
 import com.example.litemediaplayer.settings.PlayerResizeMode
 import com.example.litemediaplayer.settings.PlayerRotation
+import androidx.compose.ui.text.input.KeyboardType
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -99,7 +100,6 @@ fun PlayerScreen(
     onOpenFolderManager: () -> Unit,
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
-    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
 
@@ -266,13 +266,7 @@ fun PlayerScreen(
                                 }
 
                                 val shouldOpen = if (currentFolder != null && currentFolder.isLocked) {
-                                    val unlocked = viewModel.requestLock(
-                                        LockTarget(
-                                            targetType = LockTargetType.VIDEO_FOLDER,
-                                            targetId = currentFolder.id
-                                        )
-                                    )
-                                    unlocked
+                                    viewModel.requestFolderUnlock(currentFolder.id)
                                 } else {
                                     true
                                 }
@@ -536,7 +530,7 @@ fun PlayerPlaybackScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = onBack) {
                             Icon(
-                                imageVector = Icons.Default.ArrowBack,
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "戻る",
                                 tint = Color.White
                             )
@@ -768,13 +762,9 @@ private fun PlayerSettingsContent(
     onToggleSubtitleAutoLoad: () -> Unit,
     onClearFolderLocks: () -> Unit
 ) {
-    Text(text = "シーク間隔: ${uiState.seekIntervalSeconds} 秒")
-    Slider(
-        value = uiState.seekIntervalSeconds.toFloat(),
-        onValueChange = { onSeekIntervalChange(it.roundToInt()) },
-        valueRange = 1f..300f,
-        steps = 298,
-        modifier = Modifier.padding(bottom = 8.dp)
+    SeekIntervalSetting(
+        currentValue = uiState.seekIntervalSeconds,
+        onValueChange = onSeekIntervalChange
     )
 
     Text(text = "画面サイズ", style = MaterialTheme.typography.titleMedium)
@@ -841,6 +831,128 @@ private fun PlayerSettingsContent(
     ) {
         Text("フォルダロック解除状態をリセット")
     }
+}
+
+@Composable
+private fun SeekIntervalSetting(
+    currentValue: Int,
+    onValueChange: (Int) -> Unit
+) {
+    var showCustomDialog by remember { mutableStateOf(false) }
+    val presets = listOf(5, 10, 15, 30)
+    val isCustom = currentValue !in presets
+
+    Text(text = "スワイプシーク間隔")
+    Text(
+        text = "現在: ${currentValue}秒",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        presets.forEach { seconds ->
+            FilterChip(
+                selected = currentValue == seconds && !isCustom,
+                onClick = { onValueChange(seconds) },
+                label = { Text("${seconds}秒") }
+            )
+        }
+        FilterChip(
+            selected = isCustom,
+            onClick = { showCustomDialog = true },
+            label = {
+                if (isCustom) {
+                    Text("カスタム(${currentValue}秒)")
+                } else {
+                    Text("カスタム")
+                }
+            }
+        )
+    }
+
+    if (showCustomDialog) {
+        CustomSeekIntervalDialog(
+            initialValue = currentValue,
+            onConfirm = { value ->
+                onValueChange(value)
+                showCustomDialog = false
+            },
+            onDismiss = { showCustomDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun CustomSeekIntervalDialog(
+    initialValue: Int,
+    onConfirm: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var textValue by remember { mutableStateOf(initialValue.toString()) }
+    var sliderValue by remember { mutableFloatStateOf(initialValue.coerceIn(1, 120).toFloat()) }
+    val validValue = textValue.toIntOrNull()
+    val isValid = validValue != null && validValue in 1..300
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("シーク間隔を設定") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("スライダーで選択")
+                Slider(
+                    value = sliderValue,
+                    onValueChange = {
+                        sliderValue = it
+                        textValue = it.toInt().toString()
+                    },
+                    valueRange = 1f..120f
+                )
+
+                Text("または直接入力（1〜300秒）")
+                OutlinedTextField(
+                    value = textValue,
+                    onValueChange = { input ->
+                        textValue = input.filter { it.isDigit() }
+                        textValue.toIntOrNull()?.let {
+                            sliderValue = it.coerceIn(1, 120).toFloat()
+                        }
+                    },
+                    suffix = { Text("秒") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    isError = !isValid && textValue.isNotEmpty(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (!isValid && textValue.isNotEmpty()) {
+                    Text(
+                        text = "1〜300の数値を入力してください",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    validValue?.let(onConfirm)
+                },
+                enabled = isValid
+            ) {
+                Text("OK")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("キャンセル")
+            }
+        }
+    )
 }
 
 @Composable

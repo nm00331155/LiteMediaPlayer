@@ -55,6 +55,19 @@ class LockManager @Inject constructor(
         return lockConfigDao.findByTarget(targetType.name, targetId)
     }
 
+    fun clearUnlockRecord(targetType: LockTargetType, targetId: Long?) {
+        val key = createKey(targetType, targetId)
+        lastUnlocked.remove(key)
+    }
+
+    fun clearUnlockRecordsForType(targetType: LockTargetType) {
+        val prefix = "${targetType.name}_"
+        lastUnlocked.keys
+            .filter { it.startsWith(prefix) }
+            .toList()
+            .forEach { key -> lastUnlocked.remove(key) }
+    }
+
     private fun createKey(targetType: LockTargetType, targetId: Long?): String {
         return "${targetType.name}_${targetId ?: "global"}"
     }
