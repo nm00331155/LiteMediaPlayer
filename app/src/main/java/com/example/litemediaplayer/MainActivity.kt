@@ -12,12 +12,15 @@ import androidx.compose.ui.Modifier
 import com.example.litemediaplayer.navigation.AppNavigation
 import com.example.litemediaplayer.settings.AppSettingsStore
 import com.example.litemediaplayer.settings.AppSettingsState
+import com.example.litemediaplayer.settings.LocaleHelper
 import com.example.litemediaplayer.settings.OrientationController
 import com.example.litemediaplayer.settings.ThemeMode
 import com.example.litemediaplayer.ui.theme.LiteMediaTheme
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -27,6 +30,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (savedInstanceState == null) {
+            runCatching {
+                val settings = runBlocking { appSettingsStore.settingsFlow.first() }
+                LocaleHelper.applyLanguageIfNeeded(this, settings.language)
+            }
+        }
 
         OrientationController(
             activity = this,

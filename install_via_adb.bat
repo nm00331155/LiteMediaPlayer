@@ -95,7 +95,10 @@ call %ADB% shell am force-stop "%PACKAGE_NAME%" >nul 2>&1
 
 if "!CLEAR_DATA!"=="1" (
     echo [INFO] Clearing app data...
-    call %ADB% shell pm clear "%PACKAGE_NAME%" >nul
+    call %ADB% shell pm clear "%PACKAGE_NAME%" >nul 2>&1
+    if errorlevel 1 (
+        echo [INFO] Skip clear: package data was not found.
+    )
 )
 
 if not "!CLEAR_DATA!"=="1" echo [INFO] Keeping app data (--keep-data).

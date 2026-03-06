@@ -290,9 +290,14 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun updateLanguage(language: AppLanguage) {
+        val currentApplied = LocaleHelper.getCurrentAppliedLanguage()
+        if (currentApplied == language) {
+            return
+        }
+
         viewModelScope.launch {
             appSettingsStore.updateLanguage(language)
-            LocaleHelper.applyLanguage(context, language)
+            LocaleHelper.applyLanguageIfNeeded(context, language)
         }
     }
 
