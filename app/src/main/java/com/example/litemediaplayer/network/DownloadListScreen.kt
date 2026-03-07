@@ -76,8 +76,14 @@ fun DownloadListScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(text = task.fileName, style = MaterialTheme.typography.titleSmall)
+                    val ratioText = if (task.totalBytes > 0L) {
+                        val percent = (task.downloadedBytes * 100 / task.totalBytes).coerceIn(0, 100)
+                        " ($percent%)"
+                    } else {
+                        ""
+                    }
                     Text(
-                        text = "${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}",
+                        text = "${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}$ratioText",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(text = statusLabel(task.status), style = MaterialTheme.typography.bodySmall)
@@ -142,9 +148,9 @@ private fun statusLabel(status: NetworkDownloadManager.DownloadStatus): String {
     return when (status) {
         NetworkDownloadManager.DownloadStatus.PENDING -> "待機中"
         NetworkDownloadManager.DownloadStatus.DOWNLOADING -> "ダウンロード中"
-        NetworkDownloadManager.DownloadStatus.PAUSED -> "一時停止"
+        NetworkDownloadManager.DownloadStatus.PAUSED -> "一時停止中"
         NetworkDownloadManager.DownloadStatus.COMPLETED -> "完了"
         NetworkDownloadManager.DownloadStatus.FAILED -> "失敗"
-        NetworkDownloadManager.DownloadStatus.CANCELED -> "キャンセル"
+        NetworkDownloadManager.DownloadStatus.CANCELED -> "キャンセル済み"
     }
 }

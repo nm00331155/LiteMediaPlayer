@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -766,6 +767,7 @@ fun NetworkBrowserScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showDownloadList by rememberSaveable { mutableStateOf(false) }
     var editingServerId by rememberSaveable { mutableStateOf<Long?>(null) }
 
     var name by rememberSaveable { mutableStateOf("") }
@@ -857,9 +859,30 @@ fun NetworkBrowserScreen(
             }
         },
         floatingActionButton = {
+            val activeCount = uiState.downloadQueue.count {
+                it.status == NetworkDownloadManager.DownloadStatus.DOWNLOADING
+            }
+            val pendingCount = uiState.downloadQueue.count {
+                it.status == NetworkDownloadManager.DownloadStatus.PENDING
+            }
+            val totalActive = activeCount + pendingCount
+
             if (uiState.downloadQueue.isNotEmpty()) {
-                FloatingActionButton(onClick = {}) {
-                    Text("DL ${uiState.downloadQueue.size}")
+                FloatingActionButton(
+                    onClick = { showDownloadList = true },
+                    containerColor = if (activeCount > 0) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.Download, contentDescription = "ダウンロード一覧")
+                        Text(
+                            text = if (activeCount > 0) "↓$activeCount" else "$totalActive",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
                 }
             }
         }
@@ -1006,6 +1029,27 @@ fun NetworkBrowserScreen(
                 }
             }
         }
+    }
+
+    if (showDownloadList) {
+        AlertDialog(
+            onDismissRequest = { showDownloadList = false },
+            title = { Text("ダウンロード状況") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(400.dp)
+                ) {
+                    DownloadListScreen()
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDownloadList = false }) {
+                    Text("閉じる")
+                }
+            }
+        )
     }
 
     uiState.actionTarget?.let { file ->

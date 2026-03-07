@@ -2,8 +2,8 @@ package com.example.litemediaplayer.network
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import com.example.litemediaplayer.core.AppLogger
 import com.hierynomus.msdtyp.AccessMask
 import com.hierynomus.mssmb2.SMB2CreateDisposition
 import com.hierynomus.mssmb2.SMB2ShareAccess
@@ -62,10 +62,12 @@ class NetworkDownloadManager {
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        AppLogger.i("DownloadManager", "Initialized")
     }
 
     fun setMaxConcurrent(max: Int) {
         maxConcurrent = max.coerceIn(1, 5)
+        AppLogger.d("DownloadManager", "Set max concurrent: $maxConcurrent")
         processQueue()
     }
 
@@ -84,6 +86,7 @@ class NetworkDownloadManager {
             totalBytes = totalBytes
         )
         _downloads.update { tasks -> listOf(task) + tasks }
+        AppLogger.i("DownloadManager", "Enqueued: ${task.fileName}")
         processQueue()
         return task.id
     }
@@ -91,17 +94,20 @@ class NetworkDownloadManager {
     fun pause(taskId: String) {
         activeJobs.remove(taskId)?.cancel()
         updateTask(taskId) { it.copy(status = DownloadStatus.PAUSED) }
+        AppLogger.d("DownloadManager", "Paused task: $taskId")
         processQueue()
     }
 
     fun resume(taskId: String) {
         updateTask(taskId) { it.copy(status = DownloadStatus.PENDING) }
+        AppLogger.d("DownloadManager", "Resumed task: $taskId")
         processQueue()
     }
 
     fun cancel(taskId: String) {
         activeJobs.remove(taskId)?.cancel()
         _downloads.update { tasks -> tasks.filterNot { it.id == taskId } }
+        AppLogger.d("DownloadManager", "Canceled task: $taskId")
         processQueue()
     }
 
@@ -113,6 +119,7 @@ class NetworkDownloadManager {
                     it.status == DownloadStatus.FAILED
             }
         }
+        AppLogger.d("DownloadManager", "Removed completed/failed tasks")
     }
 
     private fun processQueue() {
@@ -131,6 +138,7 @@ class NetworkDownloadManager {
 
     private fun startDownload(task: DownloadTask) {
         updateTask(task.id) { it.copy(status = DownloadStatus.DOWNLOADING) }
+        AppLogger.d("DownloadManager", "Start: ${task.fileName}")
 
         val job = scope.launch {
             try {
@@ -149,10 +157,14 @@ class NetworkDownloadManager {
                         status = DownloadStatus.COMPLETED
                     )
                 }
+                AppLogger.i(
+                    "DownloadManager",
+                    "Download completed: ${task.fileName} (${downloaded} bytes)"
+                )
             } catch (_: CancellationException) {
                 // pause/cancel による中断
             } catch (e: Exception) {
-                Log.e("DownloadManager", "Download failed: ${task.fileName}", e)
+                AppLogger.e("DownloadManager", "Download failed: ${task.fileName}", e)
                 updateTask(task.id) { it.copy(status = DownloadStatus.FAILED) }
             } finally {
                 activeJobs.remove(task.id)

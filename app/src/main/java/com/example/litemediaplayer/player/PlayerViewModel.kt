@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.data.LockConfigDao
 import com.example.litemediaplayer.data.VideoFolder
 import com.example.litemediaplayer.data.VideoFolderDao
@@ -100,6 +101,7 @@ class PlayerViewModel @Inject constructor(
     private val deleteConfirmTarget = MutableStateFlow<VideoFolderUi?>(null)
     private val errorMessage = MutableStateFlow<String?>(null)
     private val refreshTick = MutableStateFlow(0L)
+    private val videoItemsCache = ConcurrentHashMap<String, List<VideoItem>>()
     private val metadataCache = ConcurrentHashMap<Uri, Pair<Long, String?>>()
     private val metadataLoading = AtomicBoolean(false)
 
@@ -197,8 +199,11 @@ class PlayerViewModel @Inject constructor(
                         displayName = displayName
                     )
                 )
+                AppLogger.i("PlayerVM", "Added video folder: $displayName")
+                videoItemsCache.clear()
                 refresh()
-            }.onFailure {
+            }.onFailure { error ->
+                AppLogger.e("PlayerVM", "Failed to add folder: $folderUri", error)
                 errorMessage.value = "フォルダ追加に失敗しました"
             }
         }
@@ -251,8 +256,11 @@ class PlayerViewModel @Inject constructor(
                     selectedFolderId.value = null
                 }
                 deleteConfirmTarget.value = null
+                videoItemsCache.remove(folder.treeUri)
+                AppLogger.i("PlayerVM", "Removed video folder: ${folder.displayName}")
                 refresh()
-            }.onFailure {
+            }.onFailure { error ->
+                AppLogger.e("PlayerVM", "Failed to remove folder: ${folder.displayName}", error)
                 errorMessage.value = "フォルダ登録の解除に失敗しました"
             }
         }
@@ -262,6 +270,8 @@ class PlayerViewModel @Inject constructor(
         if (selectedFolderId.value != folder.id) {
             selectedFolderId.value = folder.id
         }
+        videoItemsCache.remove(folder.treeUri)
+        AppLogger.d("PlayerVM", "Sync requested: ${folder.displayName}")
         refresh()
     }
 
@@ -376,7 +386,13 @@ class PlayerViewModel @Inject constructor(
                     .distinct()
                     .forEach { uri ->
                         if (!metadataCache.containsKey(uri)) {
+                            val start = System.currentTimeMillis()
                             metadataCache[uri] = resolveVideoMetadata(uri)
+                            val elapsed = System.currentTimeMillis() - start
+                            AppLogger.d(
+                                "PlayerVM",
+                                "Metadata loaded: ${uri.lastPathSegment ?: uri} (${elapsed}ms)"
+                            )
                             hasUpdates = true
                         }
                     }
@@ -385,12 +401,27 @@ class PlayerViewModel @Inject constructor(
             }
 
             if (hasUpdates) {
+                videoItemsCache.keys.forEach { treeUri ->
+                    val cachedItems = videoItemsCache[treeUri].orEmpty()
+                    videoItemsCache[treeUri] = cachedItems.map { item ->
+                        val cached = metadataCache[item.uri]
+                        if (cached == null) {
+                            item
+                        } else {
+                            item.copy(durationMs = cached.first, resolution = cached.second)
+                        }
+                    }
+                }
                 refresh()
             }
         }
     }
 
     private fun resolveVideoItems(treeUriString: String): List<VideoItem> {
+        videoItemsCache[treeUriString]?.let { return it }
+
+        AppLogger.d("PlayerVM", "Scanning folder: $treeUriString")
+        val scanStart = System.currentTimeMillis()
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUriString)) ?: return emptyList()
         val queue = ArrayDeque<DocumentFile>()
         val files = mutableListOf<DocumentFile>()
@@ -406,7 +437,7 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        return files
+        val scanned = files
             .map { document ->
                 VideoItem(
                     uri = document.uri,
@@ -418,6 +449,14 @@ class PlayerViewModel @Inject constructor(
                 )
             }
             .sortedBy { it.displayName.lowercase() }
+
+        val elapsed = System.currentTimeMillis() - scanStart
+        AppLogger.d(
+            "PlayerVM",
+            "Folder scan complete: ${scanned.size} files (${elapsed}ms)"
+        )
+        videoItemsCache[treeUriString] = scanned
+        return scanned
     }
 
     private fun isSupportedVideo(file: DocumentFile): Boolean {
@@ -452,7 +491,8 @@ class PlayerViewModel @Inject constructor(
             }
 
             duration to resolution
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            AppLogger.w("PlayerVM", "Failed to read metadata: $uri", error)
             0L to null
         } finally {
             runCatching { retriever.release() }

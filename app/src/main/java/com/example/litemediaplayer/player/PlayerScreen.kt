@@ -80,12 +80,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.litemediaplayer.R
+import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.core.ui.PageSettingsSheet
 import com.example.litemediaplayer.settings.PlayerResizeMode
 import com.example.litemediaplayer.settings.PlayerRotation
@@ -365,9 +368,10 @@ fun PlayerPlaybackScreen(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                android.util.Log.e(
+                AppLogger.e(
                     "PlayerPlayback",
-                    "Playback error: ${error.errorCodeName}",
+                    "Playback error: code=${error.errorCode} name=${error.errorCodeName} " +
+                        "cause=${error.cause?.javaClass?.simpleName}: ${error.cause?.message}",
                     error
                 )
             }
@@ -405,14 +409,38 @@ fun PlayerPlaybackScreen(
         val target = runCatching { Uri.parse(videoUri) }
             .getOrElse { videoUri.toUri() }
 
-        android.util.Log.d(
-            "PlayerPlayback",
-            "Playing URI: $target (scheme=${target.scheme})"
-        )
+        AppLogger.d("PlayerPlayback", "Playing URI: $target (scheme=${target.scheme})")
 
-        exoPlayer.setMediaItem(MediaItem.fromUri(target))
-        exoPlayer.prepare()
-        exoPlayer.playWhenReady = true
+        try {
+            if (target.scheme == "content") {
+                val canRead = runCatching {
+                    context.contentResolver.openFileDescriptor(target, "r")?.use { true } ?: false
+                }.getOrDefault(false)
+
+                AppLogger.d("PlayerPlayback", "canRead=$canRead")
+
+                if (canRead) {
+                    val dataSourceFactory = DefaultDataSource.Factory(context)
+                    val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                        .createMediaSource(MediaItem.fromUri(target))
+                    exoPlayer.setMediaSource(mediaSource)
+                } else {
+                    AppLogger.w(
+                        "PlayerPlayback",
+                        "Cannot open FD, fallback to MediaItem.fromUri"
+                    )
+                    exoPlayer.setMediaItem(MediaItem.fromUri(target))
+                }
+            } else {
+                exoPlayer.setMediaItem(MediaItem.fromUri(target))
+            }
+
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = true
+        } catch (e: Exception) {
+            AppLogger.e("PlayerPlayback", "Failed to play URI: $target", e)
+        }
+
         registerInteraction()
     }
 

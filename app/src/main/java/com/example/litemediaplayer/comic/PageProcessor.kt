@@ -3,6 +3,7 @@ package com.example.litemediaplayer.comic
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
@@ -21,9 +22,36 @@ class PageProcessor @Inject constructor(
         inputStream: InputStream,
         settings: ComicReaderSettings
     ): List<ProcessedPage> = withContext(Dispatchers.Default) {
-        val bytes = inputStream.readBytes()
+        val bytes = if (inputStream is ByteArrayInputStream) {
+            val buffer = ByteArray(inputStream.available())
+            val read = inputStream.read(buffer)
+            if (read <= 0) {
+                ByteArray(0)
+            } else if (read == buffer.size) {
+                buffer
+            } else {
+                buffer.copyOf(read)
+            }
+        } else {
+            inputStream.readBytes()
+        }
+
+        return@withContext processBytes(bytes = bytes, settings = settings)
+    }
+
+    suspend fun process(
+        bytes: ByteArray,
+        settings: ComicReaderSettings
+    ): List<ProcessedPage> = withContext(Dispatchers.Default) {
+        processBytes(bytes = bytes, settings = settings)
+    }
+
+    private fun processBytes(
+        bytes: ByteArray,
+        settings: ComicReaderSettings
+    ): List<ProcessedPage> {
         if (bytes.isEmpty()) {
-            return@withContext emptyList()
+            return emptyList()
         }
 
         val boundsOptions = BitmapFactory.Options().apply {
@@ -34,7 +62,7 @@ class PageProcessor @Inject constructor(
         val width = boundsOptions.outWidth
         val height = boundsOptions.outHeight
         if (width <= 0 || height <= 0) {
-            return@withContext emptyList()
+            return emptyList()
         }
 
         var trimRect = Rect(0, 0, width, height)
@@ -55,9 +83,8 @@ class PageProcessor @Inject constructor(
 
         @Suppress("DEPRECATION")
         val decoder = BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false)
-            ?: return@withContext emptyList()
 
-        try {
+        return try {
             val trimmedWidth = trimRect.width()
             val trimmedHeight = trimRect.height()
             val shouldSplit = settings.mode == ReaderMode.PAGE &&
@@ -65,7 +92,7 @@ class PageProcessor @Inject constructor(
                 splitter.analyze(trimmedWidth, trimmedHeight, settings.splitThreshold)
 
             if (!shouldSplit) {
-                return@withContext listOf(
+                return listOf(
                     ProcessedPage(rect = trimRect, wasSplit = false)
                 )
             }

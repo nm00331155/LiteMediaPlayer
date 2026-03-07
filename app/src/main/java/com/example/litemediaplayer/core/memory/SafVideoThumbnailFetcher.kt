@@ -13,6 +13,7 @@ import coil.fetch.DrawableResult
 import coil.fetch.FetchResult
 import coil.fetch.Fetcher
 import coil.request.Options
+import com.example.litemediaplayer.core.AppLogger
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,10 +35,15 @@ class SafVideoThumbnailFetcher(
     }
 
     private fun tryLoadThumbnail(): Bitmap? {
+        AppLogger.d("Thumbnail", "Resolve thumbnail: $uri")
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                return context.contentResolver.loadThumbnail(uri, Size(320, 180), null)
-            } catch (_: Exception) {
+                val bitmap = context.contentResolver.loadThumbnail(uri, Size(320, 180), null)
+                AppLogger.d("Thumbnail", "Loaded via ContentResolver.loadThumbnail")
+                return bitmap
+            } catch (error: Exception) {
+                AppLogger.w("Thumbnail", "loadThumbnail fallback: $uri", error)
                 // 次の方法にフォールバック
             }
         }
@@ -47,15 +53,20 @@ class SafVideoThumbnailFetcher(
                 val retriever = MediaMetadataRetriever()
                 try {
                     retriever.setDataSource(pfd.fileDescriptor)
-                    return retriever.getFrameAtTime(
+                    val frame = retriever.getFrameAtTime(
                         1_000_000,
                         MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                     )
+                    if (frame != null) {
+                        AppLogger.d("Thumbnail", "Loaded via file descriptor")
+                    }
+                    return frame
                 } finally {
                     runCatching { retriever.release() }
                 }
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            AppLogger.w("Thumbnail", "File descriptor fallback: $uri", error)
             // 次の方法にフォールバック
         }
 
@@ -63,17 +74,23 @@ class SafVideoThumbnailFetcher(
             val retriever = MediaMetadataRetriever()
             try {
                 retriever.setDataSource(context, uri)
-                return retriever.getFrameAtTime(
+                val frame = retriever.getFrameAtTime(
                     1_000_000,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                 )
+                if (frame != null) {
+                    AppLogger.d("Thumbnail", "Loaded via MediaMetadataRetriever")
+                }
+                return frame
             } finally {
                 runCatching { retriever.release() }
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            AppLogger.w("Thumbnail", "Retriever fallback failed: $uri", error)
             // 全方法失敗
         }
 
+        AppLogger.w("Thumbnail", "Thumbnail load failed: $uri")
         return null
     }
 

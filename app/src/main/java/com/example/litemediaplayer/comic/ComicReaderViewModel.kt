@@ -11,6 +11,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.junrar.Archive
+import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.data.ComicBook
 import com.example.litemediaplayer.data.ComicBookDao
 import com.example.litemediaplayer.data.LockConfigDao
@@ -19,7 +20,6 @@ import com.example.litemediaplayer.lock.LockTargetType
 import com.example.litemediaplayer.settings.AppSettingsStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
@@ -153,9 +153,10 @@ class ComicReaderViewModel @Inject constructor(
 
                 saveProgress(bookId = bookId, currentPage = initialPage, totalPages = pages.size)
             } catch (_: OutOfMemoryError) {
+                AppLogger.e("ComicReader", "openBook OOM: $bookId")
                 _uiState.update { it.copy(errorMessage = "メモリ不足です。画像サイズが大きすぎます") }
             } catch (e: Exception) {
-                android.util.Log.e("ComicReader", "openBook failed", e)
+                AppLogger.e("ComicReader", "openBook failed", e)
                 _uiState.update { it.copy(errorMessage = "読み込みエラー: ${e.message}") }
             }
         }
@@ -429,71 +430,94 @@ class ComicReaderViewModel @Inject constructor(
         openStream: () -> java.io.InputStream?,
         settings: ComicReaderSettings
     ): List<Uri> {
-        val sourceBytes = withContext(Dispatchers.IO) {
-            openStream()?.use { it.readBytes() }
-        } ?: return emptyList()
+        return withContext(Dispatchers.IO) {
+            try {
+                val sourceBytes = openStream()?.use { it.readBytes() } ?: return@withContext emptyList()
+                AppLogger.d("ComicReader", "Processing page: $sourceName (${sourceBytes.size} bytes)")
 
-        val processed = runCatching {
-            pageProcessor.process(
-                inputStream = ByteArrayInputStream(sourceBytes),
-                settings = settings
-            )
-        }.getOrElse { error ->
-            android.util.Log.w("ComicReader", "PageProcessor failed for $sourceName", error)
-            emptyList()
-        }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    AppLogger.w(
+                        "ComicReader",
+                        "Invalid image: $sourceName (${bounds.outWidth}x${bounds.outHeight})"
+                    )
+                    return@withContext emptyList()
+                }
 
-        if (processed.isEmpty()) {
-            return emptyList()
-        }
+                AppLogger.d("ComicReader", "Image size: ${bounds.outWidth}x${bounds.outHeight}")
 
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size, bounds)
-        val fullRect = android.graphics.Rect(0, 0, bounds.outWidth, bounds.outHeight)
+                if (!settings.autoTrimEnabled && !settings.autoSplitEnabled) {
+                    return@withContext writeSingleTempPage(sourceBytes, sourceName)
+                }
 
-        if (processed.size == 1 && processed.first().rect == fullRect) {
-            return writeSingleTempPage(sourceBytes, sourceName)
-        }
+                val processed = runCatching {
+                    pageProcessor.process(bytes = sourceBytes, settings = settings)
+                }.getOrElse { error ->
+                    AppLogger.w("ComicReader", "PageProcessor failed for $sourceName", error)
+                    emptyList()
+                }
 
-        val sampleSize = if (bounds.outWidth > 4_000 || bounds.outHeight > 4_000) 2 else 1
-        val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-        }
-        val sourceBitmap = BitmapFactory.decodeByteArray(
-            sourceBytes,
-            0,
-            sourceBytes.size,
-            decodeOptions
-        ) ?: return emptyList()
+                if (processed.isEmpty()) {
+                    return@withContext writeSingleTempPage(sourceBytes, sourceName)
+                }
 
-        val scaleX = sourceBitmap.width.toFloat() / bounds.outWidth.toFloat().coerceAtLeast(1f)
-        val scaleY = sourceBitmap.height.toFloat() / bounds.outHeight.toFloat().coerceAtLeast(1f)
-        val outputUris = mutableListOf<Uri>()
+                val fullRect = android.graphics.Rect(0, 0, bounds.outWidth, bounds.outHeight)
+                if (processed.size == 1 && processed.first().rect == fullRect) {
+                    return@withContext writeSingleTempPage(sourceBytes, sourceName)
+                }
 
-        processed.forEachIndexed { index, page ->
-            val rect = page.rect
+                val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+                val sampleSize = when {
+                    maxDim > 8_000 -> 4
+                    maxDim > 4_000 -> 2
+                    else -> 1
+                }
+                val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                val sourceBitmap = BitmapFactory.decodeByteArray(
+                    sourceBytes,
+                    0,
+                    sourceBytes.size,
+                    decodeOptions
+                ) ?: return@withContext emptyList()
 
-            val left = (rect.left * scaleX).toInt().coerceIn(0, sourceBitmap.width - 1)
-            val top = (rect.top * scaleY).toInt().coerceIn(0, sourceBitmap.height - 1)
-            val cropWidth = (rect.width() * scaleX).toInt()
-                .coerceIn(1, sourceBitmap.width - left)
-            val cropHeight = (rect.height() * scaleY).toInt()
-                .coerceIn(1, sourceBitmap.height - top)
+                val scaleX = sourceBitmap.width.toFloat() / bounds.outWidth.toFloat().coerceAtLeast(1f)
+                val scaleY = sourceBitmap.height.toFloat() / bounds.outHeight.toFloat().coerceAtLeast(1f)
+                val outputUris = mutableListOf<Uri>()
 
-            val cropped = Bitmap.createBitmap(sourceBitmap, left, top, cropWidth, cropHeight)
-            val file = File(
-                ensureProcessedCacheDir(),
-                "${sourceName.hashCode()}_${System.nanoTime()}_${index}.jpg"
-            )
-            FileOutputStream(file).use { output ->
-                cropped.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                processed.forEachIndexed { index, page ->
+                    val rect = page.rect
+
+                    val left = (rect.left * scaleX).toInt().coerceIn(0, sourceBitmap.width - 1)
+                    val top = (rect.top * scaleY).toInt().coerceIn(0, sourceBitmap.height - 1)
+                    val cropWidth = (rect.width() * scaleX).toInt()
+                        .coerceIn(1, sourceBitmap.width - left)
+                    val cropHeight = (rect.height() * scaleY).toInt()
+                        .coerceIn(1, sourceBitmap.height - top)
+
+                    val cropped = Bitmap.createBitmap(sourceBitmap, left, top, cropWidth, cropHeight)
+                    val file = File(
+                        ensureProcessedCacheDir(),
+                        "${sourceName.hashCode()}_${System.nanoTime()}_${index}.jpg"
+                    )
+                    FileOutputStream(file).use { output ->
+                        cropped.compress(Bitmap.CompressFormat.JPEG, 85, output)
+                    }
+                    cropped.recycle()
+                    outputUris += file.toUri()
+                }
+
+                sourceBitmap.recycle()
+                outputUris
+            } catch (_: OutOfMemoryError) {
+                AppLogger.e("ComicReader", "OOM processing page: $sourceName")
+                System.gc()
+                emptyList()
+            } catch (error: Exception) {
+                AppLogger.e("ComicReader", "Error processing page: $sourceName", error)
+                emptyList()
             }
-            cropped.recycle()
-            outputUris += file.toUri()
         }
-
-        sourceBitmap.recycle()
-        return outputUris
     }
 
     private fun writeSingleTempPage(bytes: ByteArray, sourceName: String): List<Uri> {
@@ -537,7 +561,7 @@ class ComicReaderViewModel @Inject constructor(
                             }
                             zipStream.closeEntry()
                         } catch (e: Exception) {
-                            android.util.Log.w("ComicReader", "Skip zip entry: ${entry.name}", e)
+                            AppLogger.w("ComicReader", "Skip zip entry: ${entry.name}", e)
                         }
                         entry = try {
                             zipStream.nextEntry
@@ -548,7 +572,7 @@ class ComicReaderViewModel @Inject constructor(
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("ComicReader", "extractZipImages failed", e)
+            AppLogger.e("ComicReader", "extractZipImages failed", e)
             _uiState.update { it.copy(errorMessage = "ZIP展開エラー: ${e.message}") }
         }
     }

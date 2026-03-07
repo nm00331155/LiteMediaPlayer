@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.litemediaplayer.core.ui.LogViewerSheet
 import com.example.litemediaplayer.lock.LockAuthMethod
 
 @Composable
@@ -41,6 +42,7 @@ fun SettingsScreen(
     var memoryExpanded by rememberSaveable { mutableStateOf(false) }
     var generalExpanded by rememberSaveable { mutableStateOf(true) }
     var appInfoExpanded by rememberSaveable { mutableStateOf(false) }
+    var showLogViewer by rememberSaveable { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -180,6 +182,12 @@ fun SettingsScreen(
             ) {
                 Text(text = "アプリ名: LiteMedia Player")
                 Text(text = "バージョン: 1.0")
+                Button(
+                    onClick = { showLogViewer = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = "動作ログを表示")
+                }
             }
         }
 
@@ -195,6 +203,11 @@ fun SettingsScreen(
             }
         }
     }
+
+    LogViewerSheet(
+        visible = showLogViewer,
+        onDismiss = { showLogViewer = false }
+    )
 }
 
 @Composable
