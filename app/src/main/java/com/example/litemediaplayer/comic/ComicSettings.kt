@@ -58,7 +58,8 @@ data class ComicReaderSettings(
     val trimSafetyMargin: Int = 2,
     val trimSensitivity: TrimSensitivity = TrimSensitivity.MEDIUM,
     val verticalScrollSpeed: Float = 1f,
-    val pageSnapEnabled: Boolean = false
+    val pageSnapEnabled: Boolean = false,
+    val touchZone: TouchZoneConfig = TouchZoneConfig()
 )
 
 @Singleton
@@ -93,7 +94,74 @@ class ComicSettings @Inject constructor(
                     ?.toEnumOrDefault(TrimSensitivity.MEDIUM)
                     ?: TrimSensitivity.MEDIUM,
                 verticalScrollSpeed = prefs[Keys.VERTICAL_SCROLL_SPEED] ?: 1f,
-                pageSnapEnabled = prefs[Keys.PAGE_SNAP_ENABLED] ?: false
+                pageSnapEnabled = prefs[Keys.PAGE_SNAP_ENABLED] ?: false,
+                touchZone = TouchZoneConfig(
+                    layout = prefs[Keys.TOUCH_ZONE_LAYOUT]
+                        ?.toEnumOrDefault(TouchZoneLayout.THREE_COLUMN)
+                        ?: TouchZoneLayout.THREE_COLUMN,
+                    leftTap = prefs[Keys.TOUCH_LEFT_TAP]
+                        ?.toEnumOrDefault(TouchAction.NONE)
+                        ?: TouchAction.NONE,
+                    centerTap = prefs[Keys.TOUCH_CENTER_TAP]
+                        ?.toEnumOrDefault(TouchAction.TOGGLE_CONTROLS)
+                        ?: TouchAction.TOGGLE_CONTROLS,
+                    rightTap = prefs[Keys.TOUCH_RIGHT_TAP]
+                        ?.toEnumOrDefault(TouchAction.NONE)
+                        ?: TouchAction.NONE,
+                    leftLongPress = prefs[Keys.TOUCH_LEFT_LONG]
+                        ?.toEnumOrDefault(TouchAction.FIRST_PAGE)
+                        ?: TouchAction.FIRST_PAGE,
+                    centerLongPress = prefs[Keys.TOUCH_CENTER_LONG]
+                        ?.toEnumOrDefault(TouchAction.JUMP_TO_PAGE)
+                        ?: TouchAction.JUMP_TO_PAGE,
+                    rightLongPress = prefs[Keys.TOUCH_RIGHT_LONG]
+                        ?.toEnumOrDefault(TouchAction.LAST_PAGE)
+                        ?: TouchAction.LAST_PAGE,
+                    topLeftTap = prefs[Keys.TOUCH_TOP_LEFT_TAP]
+                        ?.toEnumOrDefault(TouchAction.PREV_PAGE)
+                        ?: TouchAction.PREV_PAGE,
+                    topCenterTap = prefs[Keys.TOUCH_TOP_CENTER_TAP]
+                        ?.toEnumOrDefault(TouchAction.TOGGLE_CONTROLS)
+                        ?: TouchAction.TOGGLE_CONTROLS,
+                    topRightTap = prefs[Keys.TOUCH_TOP_RIGHT_TAP]
+                        ?.toEnumOrDefault(TouchAction.NEXT_PAGE)
+                        ?: TouchAction.NEXT_PAGE,
+                    topLeftLongPress = prefs[Keys.TOUCH_TOP_LEFT_LONG]
+                        ?.toEnumOrDefault(TouchAction.FIRST_PAGE)
+                        ?: TouchAction.FIRST_PAGE,
+                    topCenterLongPress = prefs[Keys.TOUCH_TOP_CENTER_LONG]
+                        ?.toEnumOrDefault(TouchAction.JUMP_TO_PAGE)
+                        ?: TouchAction.JUMP_TO_PAGE,
+                    topRightLongPress = prefs[Keys.TOUCH_TOP_RIGHT_LONG]
+                        ?.toEnumOrDefault(TouchAction.LAST_PAGE)
+                        ?: TouchAction.LAST_PAGE,
+                    bottomLeftTap = prefs[Keys.TOUCH_BOTTOM_LEFT_TAP]
+                        ?.toEnumOrDefault(TouchAction.SKIP_BACKWARD)
+                        ?: TouchAction.SKIP_BACKWARD,
+                    bottomCenterTap = prefs[Keys.TOUCH_BOTTOM_CENTER_TAP]
+                        ?.toEnumOrDefault(TouchAction.TOGGLE_FULLSCREEN)
+                        ?: TouchAction.TOGGLE_FULLSCREEN,
+                    bottomRightTap = prefs[Keys.TOUCH_BOTTOM_RIGHT_TAP]
+                        ?.toEnumOrDefault(TouchAction.SKIP_FORWARD)
+                        ?: TouchAction.SKIP_FORWARD,
+                    bottomLeftLongPress = prefs[Keys.TOUCH_BOTTOM_LEFT_LONG]
+                        ?.toEnumOrDefault(TouchAction.NONE)
+                        ?: TouchAction.NONE,
+                    bottomCenterLongPress = prefs[Keys.TOUCH_BOTTOM_CENTER_LONG]
+                        ?.toEnumOrDefault(TouchAction.NONE)
+                        ?: TouchAction.NONE,
+                    bottomRightLongPress = prefs[Keys.TOUCH_BOTTOM_RIGHT_LONG]
+                        ?.toEnumOrDefault(TouchAction.NONE)
+                        ?: TouchAction.NONE,
+                    longPressMs = (prefs[Keys.TOUCH_LONG_PRESS_MS] ?: 500).coerceIn(200, 1500),
+                    skipPageCount = (prefs[Keys.TOUCH_SKIP_PAGE_COUNT] ?: 10).coerceIn(1, 50),
+                    volumeUpAction = prefs[Keys.VOLUME_UP_ACTION]
+                        ?.toEnumOrDefault(TouchAction.NEXT_PAGE)
+                        ?: TouchAction.NEXT_PAGE,
+                    volumeDownAction = prefs[Keys.VOLUME_DOWN_ACTION]
+                        ?.toEnumOrDefault(TouchAction.PREV_PAGE)
+                        ?: TouchAction.PREV_PAGE
+                )
             )
         }
 
@@ -204,6 +272,34 @@ class ComicSettings @Inject constructor(
             prefs[Keys.PAGE_SNAP_ENABLED] = enabled
         }
     }
+
+    suspend fun updateTouchZoneConfig(config: TouchZoneConfig) {
+        context.comicDataStore.edit { prefs ->
+            prefs[Keys.TOUCH_ZONE_LAYOUT] = config.layout.name
+            prefs[Keys.TOUCH_LEFT_TAP] = config.leftTap.name
+            prefs[Keys.TOUCH_CENTER_TAP] = config.centerTap.name
+            prefs[Keys.TOUCH_RIGHT_TAP] = config.rightTap.name
+            prefs[Keys.TOUCH_LEFT_LONG] = config.leftLongPress.name
+            prefs[Keys.TOUCH_CENTER_LONG] = config.centerLongPress.name
+            prefs[Keys.TOUCH_RIGHT_LONG] = config.rightLongPress.name
+            prefs[Keys.TOUCH_TOP_LEFT_TAP] = config.topLeftTap.name
+            prefs[Keys.TOUCH_TOP_CENTER_TAP] = config.topCenterTap.name
+            prefs[Keys.TOUCH_TOP_RIGHT_TAP] = config.topRightTap.name
+            prefs[Keys.TOUCH_TOP_LEFT_LONG] = config.topLeftLongPress.name
+            prefs[Keys.TOUCH_TOP_CENTER_LONG] = config.topCenterLongPress.name
+            prefs[Keys.TOUCH_TOP_RIGHT_LONG] = config.topRightLongPress.name
+            prefs[Keys.TOUCH_BOTTOM_LEFT_TAP] = config.bottomLeftTap.name
+            prefs[Keys.TOUCH_BOTTOM_CENTER_TAP] = config.bottomCenterTap.name
+            prefs[Keys.TOUCH_BOTTOM_RIGHT_TAP] = config.bottomRightTap.name
+            prefs[Keys.TOUCH_BOTTOM_LEFT_LONG] = config.bottomLeftLongPress.name
+            prefs[Keys.TOUCH_BOTTOM_CENTER_LONG] = config.bottomCenterLongPress.name
+            prefs[Keys.TOUCH_BOTTOM_RIGHT_LONG] = config.bottomRightLongPress.name
+            prefs[Keys.TOUCH_LONG_PRESS_MS] = config.longPressMs.coerceIn(200, 1500)
+            prefs[Keys.TOUCH_SKIP_PAGE_COUNT] = config.skipPageCount.coerceIn(1, 50)
+            prefs[Keys.VOLUME_UP_ACTION] = config.volumeUpAction.name
+            prefs[Keys.VOLUME_DOWN_ACTION] = config.volumeDownAction.name
+        }
+    }
 }
 
 private object Keys {
@@ -225,6 +321,38 @@ private object Keys {
     val TRIM_SENSITIVITY: Preferences.Key<String> = stringPreferencesKey("trim_sensitivity")
     val VERTICAL_SCROLL_SPEED: Preferences.Key<Float> = floatPreferencesKey("vertical_scroll_speed")
     val PAGE_SNAP_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("page_snap_enabled")
+    val TOUCH_ZONE_LAYOUT: Preferences.Key<String> = stringPreferencesKey("touch_zone_layout")
+    val TOUCH_LEFT_TAP: Preferences.Key<String> = stringPreferencesKey("touch_left_tap")
+    val TOUCH_CENTER_TAP: Preferences.Key<String> = stringPreferencesKey("touch_center_tap")
+    val TOUCH_RIGHT_TAP: Preferences.Key<String> = stringPreferencesKey("touch_right_tap")
+    val TOUCH_LEFT_LONG: Preferences.Key<String> = stringPreferencesKey("touch_left_long")
+    val TOUCH_CENTER_LONG: Preferences.Key<String> = stringPreferencesKey("touch_center_long")
+    val TOUCH_RIGHT_LONG: Preferences.Key<String> = stringPreferencesKey("touch_right_long")
+    val TOUCH_TOP_LEFT_TAP: Preferences.Key<String> = stringPreferencesKey("touch_top_left_tap")
+    val TOUCH_TOP_CENTER_TAP: Preferences.Key<String> =
+        stringPreferencesKey("touch_top_center_tap")
+    val TOUCH_TOP_RIGHT_TAP: Preferences.Key<String> = stringPreferencesKey("touch_top_right_tap")
+    val TOUCH_TOP_LEFT_LONG: Preferences.Key<String> = stringPreferencesKey("touch_top_left_long")
+    val TOUCH_TOP_CENTER_LONG: Preferences.Key<String> =
+        stringPreferencesKey("touch_top_center_long")
+    val TOUCH_TOP_RIGHT_LONG: Preferences.Key<String> =
+        stringPreferencesKey("touch_top_right_long")
+    val TOUCH_BOTTOM_LEFT_TAP: Preferences.Key<String> =
+        stringPreferencesKey("touch_bottom_left_tap")
+    val TOUCH_BOTTOM_CENTER_TAP: Preferences.Key<String> =
+        stringPreferencesKey("touch_bottom_center_tap")
+    val TOUCH_BOTTOM_RIGHT_TAP: Preferences.Key<String> =
+        stringPreferencesKey("touch_bottom_right_tap")
+    val TOUCH_BOTTOM_LEFT_LONG: Preferences.Key<String> =
+        stringPreferencesKey("touch_bottom_left_long")
+    val TOUCH_BOTTOM_CENTER_LONG: Preferences.Key<String> =
+        stringPreferencesKey("touch_bottom_center_long")
+    val TOUCH_BOTTOM_RIGHT_LONG: Preferences.Key<String> =
+        stringPreferencesKey("touch_bottom_right_long")
+    val TOUCH_LONG_PRESS_MS: Preferences.Key<Int> = intPreferencesKey("touch_long_press_ms")
+    val TOUCH_SKIP_PAGE_COUNT: Preferences.Key<Int> = intPreferencesKey("touch_skip_page_count")
+    val VOLUME_UP_ACTION: Preferences.Key<String> = stringPreferencesKey("volume_up_action")
+    val VOLUME_DOWN_ACTION: Preferences.Key<String> = stringPreferencesKey("volume_down_action")
 }
 
 private inline fun <reified T : Enum<T>> String.toEnumOrDefault(default: T): T {

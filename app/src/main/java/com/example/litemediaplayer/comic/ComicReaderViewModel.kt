@@ -207,6 +207,47 @@ class ComicReaderViewModel @Inject constructor(
         )
     }
 
+    fun skipForward(count: Int) {
+        val state = _uiState.value
+        if (state.pages.isEmpty()) {
+            return
+        }
+
+        val safeCount = count.coerceAtLeast(1)
+        val target = (state.currentPage + safeCount).coerceAtMost(state.pages.lastIndex)
+        _uiState.update { it.copy(currentPage = target) }
+        saveProgress(
+            bookId = state.currentBookId ?: return,
+            currentPage = target,
+            totalPages = state.pages.size
+        )
+    }
+
+    fun skipBackward(count: Int) {
+        val state = _uiState.value
+        if (state.pages.isEmpty()) {
+            return
+        }
+
+        val safeCount = count.coerceAtLeast(1)
+        val target = (state.currentPage - safeCount).coerceAtLeast(0)
+        _uiState.update { it.copy(currentPage = target) }
+        saveProgress(
+            bookId = state.currentBookId ?: return,
+            currentPage = target,
+            totalPages = state.pages.size
+        )
+    }
+
+    fun goToFirstPage() {
+        setCurrentPage(0)
+    }
+
+    fun goToLastPage() {
+        val lastIndex = _uiState.value.pages.lastIndex
+        setCurrentPage(lastIndex.coerceAtLeast(0))
+    }
+
     fun consumeError() {
         _uiState.update { it.copy(errorMessage = null) }
     }
@@ -292,6 +333,12 @@ class ComicReaderViewModel @Inject constructor(
     fun updateTrimSensitivity(sensitivity: TrimSensitivity) {
         viewModelScope.launch {
             comicSettings.updateTrimSensitivity(sensitivity)
+        }
+    }
+
+    fun updateTouchZoneConfig(config: TouchZoneConfig) {
+        viewModelScope.launch {
+            comicSettings.updateTouchZoneConfig(config)
         }
     }
 
@@ -657,24 +704,143 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     private fun resolveDisplayName(uri: Uri): String {
-        return DocumentFile.fromTreeUri(context, uri)?.name
-            ?: DocumentFile.fromSingleUri(context, uri)?.name
-            ?: "comic"
+        runCatching {
+            DocumentFile.fromSingleUri(context, uri)?.name
+        }.getOrNull()?.let { name ->
+            return name
+        }
+
+        runCatching {
+            DocumentFile.fromTreeUri(context, uri)?.name
+        }.getOrNull()?.let { name ->
+            return name
+        }
+
+        runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0) {
+                        cursor.getString(index)
+                    } else {
+                        null
+                    }
+                } else {
+                    null
+                }
+            }
+        }.getOrNull()?.let { name ->
+            return name
+        }
+
+        return "comic"
     }
 
-    private fun resolveCoverUri(uri: Uri, sourceType: String): String? {
+    private suspend fun resolveCoverUri(uri: Uri, sourceType: String): String? {
         return when (sourceType) {
             "FOLDER" -> {
-                val root = DocumentFile.fromTreeUri(context, uri) ?: return null
-                root.listFiles()
-                    .firstOrNull { file -> file.isFile && file.name.hasImageExtension() }
-                    ?.uri
-                    ?.toString()
+                try {
+                    val root = DocumentFile.fromTreeUri(context, uri) ?: return null
+                    root.listFiles()
+                        .filter { file -> file.isFile && file.name.hasImageExtension() }
+                        .minByOrNull { file -> file.name?.lowercase(Locale.getDefault()) ?: "" }
+                        ?.uri
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+
+            "ARCHIVE" -> {
+                try {
+                    extractFirstImageFromArchive(uri)
+                } catch (error: Exception) {
+                    AppLogger.w("ComicReader", "Cover extract failed", error)
+                    null
+                }
             }
 
             else -> null
         }
     }
+
+    private suspend fun extractFirstImageFromArchive(archiveUri: Uri): String? =
+        withContext(Dispatchers.IO) {
+            val coverDir = File(context.cacheDir, "comic_covers")
+            coverDir.mkdirs()
+
+            val fileName = resolveDisplayName(archiveUri)
+            val coverFile = File(coverDir, "${fileName.hashCode()}_cover.jpg")
+            if (coverFile.exists() && coverFile.length() > 0L) {
+                return@withContext coverFile.toUri().toString()
+            }
+
+            val archiveName = fileName.lowercase(Locale.getDefault())
+            if (archiveName.endsWith(".cbr") || archiveName.endsWith(".rar")) {
+                val tempRar = File(coverDir, "temp_${System.nanoTime()}.rar")
+                try {
+                    context.contentResolver.openInputStream(archiveUri)?.use { input ->
+                        FileOutputStream(tempRar).use { output ->
+                            input.copyTo(output)
+                        }
+                    } ?: return@withContext null
+
+                    Archive(tempRar).use { archive ->
+                        var header = archive.nextFileHeader()
+                        while (header != null) {
+                            val entryName = header.fileNameString ?: ""
+                            if (!header.isDirectory && entryName.hasImageExtension()) {
+                                FileOutputStream(coverFile).use { output ->
+                                    archive.extractFile(header, output)
+                                }
+                                break
+                            }
+                            header = archive.nextFileHeader()
+                        }
+                    }
+                } finally {
+                    runCatching { tempRar.delete() }
+                }
+            } else {
+                context.contentResolver.openInputStream(archiveUri)?.use { input ->
+                    ZipInputStream(input).use { zipStream ->
+                        var entry = zipStream.nextEntry
+                        while (entry != null) {
+                            if (!entry.isDirectory && entry.name.hasImageExtension()) {
+                                FileOutputStream(coverFile).use { output ->
+                                    val buffer = ByteArray(8_192)
+                                    var bytesRead: Int
+                                    while (zipStream.read(buffer).also { bytesRead = it } != -1) {
+                                        output.write(buffer, 0, bytesRead)
+                                    }
+                                    output.flush()
+                                }
+                                zipStream.closeEntry()
+                                break
+                            }
+                            zipStream.closeEntry()
+                            entry = try {
+                                zipStream.nextEntry
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (coverFile.exists() && coverFile.length() > 0L) {
+                coverFile.toUri().toString()
+            } else {
+                null
+            }
+        }
 
     private suspend fun estimatePageCount(uri: Uri, sourceType: String): Int {
         return when (sourceType) {

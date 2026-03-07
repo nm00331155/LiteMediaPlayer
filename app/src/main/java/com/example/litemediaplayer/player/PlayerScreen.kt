@@ -322,7 +322,10 @@ fun PlayerPlaybackScreen(
     var sliderValue by remember { mutableFloatStateOf(0f) }
     var isSliderDragging by remember { mutableStateOf(false) }
     var brightnessLevel by remember { mutableFloatStateOf(0.6f) }
+    var volumeAccumulator by remember { mutableFloatStateOf(0f) }
+    var brightnessAccumulator by remember { mutableFloatStateOf(0f) }
     var controlsVisible by remember { mutableStateOf(true) }
+    var hasStartedPlayback by remember { mutableStateOf(false) }
     var lastInteractionAtMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
 
     fun registerInteraction() {
@@ -406,7 +409,12 @@ fun PlayerPlaybackScreen(
         }
     }
 
-    LaunchedEffect(videoUri) {
+    LaunchedEffect(Unit) {
+        if (hasStartedPlayback) {
+            return@LaunchedEffect
+        }
+        hasStartedPlayback = true
+
         val target = runCatching { Uri.parse(videoUri) }
             .getOrElse { videoUri.toUri() }
 
@@ -511,6 +519,8 @@ fun PlayerPlaybackScreen(
                 seekIntervalSeconds = uiState.seekIntervalSeconds,
                 onSeekCommit = { deltaMs ->
                     registerInteraction()
+                    volumeAccumulator = 0f
+                    brightnessAccumulator = 0f
                     val seekTo = (exoPlayer.currentPosition + deltaMs)
                         .coerceAtLeast(0L)
                         .coerceAtMost(durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE)
@@ -518,26 +528,42 @@ fun PlayerPlaybackScreen(
                 },
                 onVolumeDelta = { normalizedDelta ->
                     registerInteraction()
-                    val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    val step = (normalizedDelta * maxVolume * 2f).roundToInt()
-                    val updated = (currentVolume + step).coerceIn(0, maxVolume)
-                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, updated, 0)
-                    ((updated.toFloat() / maxVolume) * 100f).roundToInt()
+                    volumeAccumulator += normalizedDelta
+                    val steps = (volumeAccumulator * maxVolume * 1.5f).roundToInt()
+                    if (steps != 0) {
+                        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                        val updated = (currentVolume + steps).coerceIn(0, maxVolume)
+                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, updated, 0)
+                        volumeAccumulator = 0f
+                        ((updated.toFloat() / maxVolume) * 100f).roundToInt()
+                    } else {
+                        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                        ((currentVolume.toFloat() / maxVolume) * 100f).roundToInt()
+                    }
                 },
                 onBrightnessDelta = { normalizedDelta ->
                     registerInteraction()
-                    val updated = (brightnessLevel + normalizedDelta * 2f).coerceIn(0.05f, 1f)
-                    brightnessLevel = updated
-                    val window = activity?.window
-                    if (window != null) {
-                        val params = window.attributes
-                        params.screenBrightness = updated
-                        window.attributes = params
+                    brightnessAccumulator += normalizedDelta
+                    val delta = brightnessAccumulator
+                    if (kotlin.math.abs(delta) > 0.005f) {
+                        val updated = (brightnessLevel + delta).coerceIn(0.05f, 1f)
+                        brightnessLevel = updated
+                        brightnessAccumulator = 0f
+                        val window = activity?.window
+                        if (window != null) {
+                            val params = window.attributes
+                            params.screenBrightness = updated
+                            window.attributes = params
+                        }
+                        updated
+                    } else {
+                        brightnessLevel
                     }
-                    updated
                 },
                 onTogglePlayPause = {
                     registerInteraction()
+                    volumeAccumulator = 0f
+                    brightnessAccumulator = 0f
                     if (exoPlayer.isPlaying) {
                         exoPlayer.pause()
                     } else {

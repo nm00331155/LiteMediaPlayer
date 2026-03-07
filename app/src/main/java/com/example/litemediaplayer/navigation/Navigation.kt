@@ -155,7 +155,15 @@ fun AppNavigation() {
                 val bookId = backStackEntry.arguments?.getLong("bookId") ?: return@composable
                 ComicReaderScreen(
                     bookId = bookId,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onOpenNextBook = { nextId ->
+                        navController.navigate("comic_reader/$nextId") {
+                            popUpTo("comic_reader/{bookId}") {
+                                inclusive = true
+                            }
+                            launchSingleTop = true
+                        }
+                    }
                 )
             }
 
