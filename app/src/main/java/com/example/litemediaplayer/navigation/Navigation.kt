@@ -1,6 +1,6 @@
 package com.example.litemediaplayer.navigation
 
-import android.net.Uri
+import android.util.Base64
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MenuBook
@@ -110,7 +110,11 @@ fun AppNavigation() {
             composable(MainTab.PLAYER.route) {
                 PlayerScreen(
                     onPlayVideo = { videoUri ->
-                        navController.navigate("player_playback/${Uri.encode(videoUri)}")
+                        val encoded = Base64.encodeToString(
+                            videoUri.toByteArray(Charsets.UTF_8),
+                            Base64.URL_SAFE or Base64.NO_WRAP
+                        )
+                        navController.navigate("player_playback/$encoded")
                     },
                     onOpenFolderManager = {
                         navController.navigate("player_folders")
@@ -131,9 +135,15 @@ fun AppNavigation() {
                 route = "player_playback/{videoUri}",
                 arguments = listOf(navArgument("videoUri") { type = NavType.StringType })
             ) { backStackEntry ->
-                val encodedUri = backStackEntry.arguments?.getString("videoUri") ?: return@composable
+                val raw = backStackEntry.arguments?.getString("videoUri") ?: return@composable
+                val decodedUri = runCatching {
+                    String(
+                        Base64.decode(raw, Base64.URL_SAFE or Base64.NO_WRAP),
+                        Charsets.UTF_8
+                    )
+                }.getOrDefault(raw)
                 PlayerPlaybackScreen(
-                    videoUri = Uri.decode(encodedUri),
+                    videoUri = decodedUri,
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -152,7 +162,11 @@ fun AppNavigation() {
             composable(MainTab.NETWORK.route) {
                 NetworkBrowserScreen(
                     onPlayVideo = { streamUri ->
-                        navController.navigate("player_playback/${Uri.encode(streamUri)}")
+                        val encoded = Base64.encodeToString(
+                            streamUri.toByteArray(Charsets.UTF_8),
+                            Base64.URL_SAFE or Base64.NO_WRAP
+                        )
+                        navController.navigate("player_playback/$encoded")
                     }
                 )
             }

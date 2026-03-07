@@ -92,11 +92,19 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     fun registerComicFolder(folderUri: Uri, resolver: ContentResolver) {
-        registerSource(
-            sourceUri = folderUri,
-            sourceType = "FOLDER",
-            resolver = resolver
-        )
+        viewModelScope.launch(Dispatchers.IO) {
+            val document = DocumentFile.fromTreeUri(context, folderUri)
+            if (document == null || !document.canRead()) {
+                _uiState.update { it.copy(errorMessage = "このフォルダは読み取れません") }
+                return@launch
+            }
+
+            registerSource(
+                sourceUri = folderUri,
+                sourceType = "FOLDER",
+                resolver = resolver
+            )
+        }
     }
 
     fun registerComicArchive(fileUri: Uri, resolver: ContentResolver) {
@@ -109,40 +117,47 @@ class ComicReaderViewModel @Inject constructor(
 
     fun openBook(bookId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            val book = comicBookDao.findById(bookId)
-            if (book == null) {
-                _uiState.update { it.copy(errorMessage = "書籍が見つかりません") }
-                return@launch
-            }
+            try {
+                val book = comicBookDao.findById(bookId)
+                if (book == null) {
+                    _uiState.update { it.copy(errorMessage = "書籍が見つかりません") }
+                    return@launch
+                }
 
-            if (lockManager.isLocked(LockTargetType.COMIC_SHELF, bookId)) {
-                _uiState.update { it.copy(errorMessage = "この書籍はロックされています") }
-                return@launch
-            }
+                if (lockManager.isLocked(LockTargetType.COMIC_SHELF, bookId)) {
+                    _uiState.update { it.copy(errorMessage = "この書籍はロックされています") }
+                    return@launch
+                }
 
-            val settings = _uiState.value.settings
-            val pages = when (book.sourceType) {
-                "FOLDER" -> loadFolderPages(book.sourceUri, settings)
-                "ARCHIVE" -> loadArchivePages(book.sourceUri, settings)
-                else -> emptyList()
-            }
+                val settings = _uiState.value.settings
+                val pages = when (book.sourceType) {
+                    "FOLDER" -> loadFolderPages(book.sourceUri, settings)
+                    "ARCHIVE" -> loadArchivePages(book.sourceUri, settings)
+                    else -> emptyList()
+                }
 
-            if (pages.isEmpty()) {
-                _uiState.update { it.copy(errorMessage = "ページが見つかりません") }
-                return@launch
-            }
+                if (pages.isEmpty()) {
+                    _uiState.update { it.copy(errorMessage = "ページが見つかりません") }
+                    return@launch
+                }
 
-            val initialPage = book.lastReadPage.coerceIn(0, pages.lastIndex)
-            _uiState.update {
-                it.copy(
-                    currentBookId = bookId,
-                    pages = pages,
-                    currentPage = initialPage,
-                    errorMessage = null
-                )
-            }
+                val initialPage = book.lastReadPage.coerceIn(0, pages.lastIndex)
+                _uiState.update {
+                    it.copy(
+                        currentBookId = bookId,
+                        pages = pages,
+                        currentPage = initialPage,
+                        errorMessage = null
+                    )
+                }
 
-            saveProgress(bookId = bookId, currentPage = initialPage, totalPages = pages.size)
+                saveProgress(bookId = bookId, currentPage = initialPage, totalPages = pages.size)
+            } catch (_: OutOfMemoryError) {
+                _uiState.update { it.copy(errorMessage = "メモリ不足です。画像サイズが大きすぎます") }
+            } catch (e: Exception) {
+                android.util.Log.e("ComicReader", "openBook failed", e)
+                _uiState.update { it.copy(errorMessage = "読み込みエラー: ${e.message}") }
+            }
         }
     }
 
@@ -418,10 +433,15 @@ class ComicReaderViewModel @Inject constructor(
             openStream()?.use { it.readBytes() }
         } ?: return emptyList()
 
-        val processed = pageProcessor.process(
-            inputStream = ByteArrayInputStream(sourceBytes),
-            settings = settings
-        )
+        val processed = runCatching {
+            pageProcessor.process(
+                inputStream = ByteArrayInputStream(sourceBytes),
+                settings = settings
+            )
+        }.getOrElse { error ->
+            android.util.Log.w("ComicReader", "PageProcessor failed for $sourceName", error)
+            emptyList()
+        }
 
         if (processed.isEmpty()) {
             return emptyList()
@@ -435,20 +455,38 @@ class ComicReaderViewModel @Inject constructor(
             return writeSingleTempPage(sourceBytes, sourceName)
         }
 
-        val sourceBitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size) ?: return emptyList()
+        val sampleSize = if (bounds.outWidth > 4_000 || bounds.outHeight > 4_000) 2 else 1
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+        }
+        val sourceBitmap = BitmapFactory.decodeByteArray(
+            sourceBytes,
+            0,
+            sourceBytes.size,
+            decodeOptions
+        ) ?: return emptyList()
+
+        val scaleX = sourceBitmap.width.toFloat() / bounds.outWidth.toFloat().coerceAtLeast(1f)
+        val scaleY = sourceBitmap.height.toFloat() / bounds.outHeight.toFloat().coerceAtLeast(1f)
         val outputUris = mutableListOf<Uri>()
 
         processed.forEachIndexed { index, page ->
             val rect = page.rect
-            val cropWidth = rect.width().coerceAtLeast(1)
-            val cropHeight = rect.height().coerceAtLeast(1)
-            val cropped = Bitmap.createBitmap(sourceBitmap, rect.left, rect.top, cropWidth, cropHeight)
+
+            val left = (rect.left * scaleX).toInt().coerceIn(0, sourceBitmap.width - 1)
+            val top = (rect.top * scaleY).toInt().coerceIn(0, sourceBitmap.height - 1)
+            val cropWidth = (rect.width() * scaleX).toInt()
+                .coerceIn(1, sourceBitmap.width - left)
+            val cropHeight = (rect.height() * scaleY).toInt()
+                .coerceIn(1, sourceBitmap.height - top)
+
+            val cropped = Bitmap.createBitmap(sourceBitmap, left, top, cropWidth, cropHeight)
             val file = File(
                 ensureProcessedCacheDir(),
                 "${sourceName.hashCode()}_${System.nanoTime()}_${index}.jpg"
             )
             FileOutputStream(file).use { output ->
-                cropped.compress(Bitmap.CompressFormat.JPEG, 92, output)
+                cropped.compress(Bitmap.CompressFormat.JPEG, 90, output)
             }
             cropped.recycle()
             outputUris += file.toUri()
@@ -479,21 +517,39 @@ class ComicReaderViewModel @Inject constructor(
         archiveUri: Uri,
         outputDir: File
     ) = withContext(Dispatchers.IO) {
-        context.contentResolver.openInputStream(archiveUri)?.use { input ->
-            ZipInputStream(input).use { zipStream ->
-                var entry = zipStream.nextEntry
-                while (entry != null) {
-                    val name = entry.name
-                    if (!entry.isDirectory && name.hasImageExtension()) {
-                        val outFile = File(outputDir, sanitizeFileName(name))
-                        FileOutputStream(outFile).use { output ->
-                            zipStream.copyTo(output)
+        try {
+            context.contentResolver.openInputStream(archiveUri)?.use { input ->
+                ZipInputStream(input).use { zipStream ->
+                    var entry = zipStream.nextEntry
+                    while (entry != null) {
+                        try {
+                            val name = entry.name
+                            if (!entry.isDirectory && name.hasImageExtension()) {
+                                val outFile = File(outputDir, sanitizeFileName(name))
+                                FileOutputStream(outFile).use { output ->
+                                    val buffer = ByteArray(8_192)
+                                    var bytesRead: Int
+                                    while (zipStream.read(buffer).also { bytesRead = it } != -1) {
+                                        output.write(buffer, 0, bytesRead)
+                                    }
+                                    output.flush()
+                                }
+                            }
+                            zipStream.closeEntry()
+                        } catch (e: Exception) {
+                            android.util.Log.w("ComicReader", "Skip zip entry: ${entry.name}", e)
+                        }
+                        entry = try {
+                            zipStream.nextEntry
+                        } catch (_: Exception) {
+                            null
                         }
                     }
-                    zipStream.closeEntry()
-                    entry = zipStream.nextEntry
                 }
             }
+        } catch (e: Exception) {
+            android.util.Log.e("ComicReader", "extractZipImages failed", e)
+            _uiState.update { it.copy(errorMessage = "ZIP展開エラー: ${e.message}") }
         }
     }
 

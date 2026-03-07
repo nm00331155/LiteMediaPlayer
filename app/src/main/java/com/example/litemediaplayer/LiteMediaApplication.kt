@@ -6,6 +6,7 @@ import coil.ImageLoaderFactory
 import com.example.litemediaplayer.core.memory.CleanupWorker
 import com.example.litemediaplayer.core.memory.CoilConfig
 import com.example.litemediaplayer.core.memory.MemoryMonitor
+import com.example.litemediaplayer.network.NetworkDownloadManager
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -15,6 +16,7 @@ class LiteMediaApplication : Application(), ImageLoaderFactory {
 
 	override fun onCreate() {
 		super.onCreate()
+		NetworkDownloadManager.shared.init(this)
 		memoryMonitor = MemoryMonitor(this)
 		registerComponentCallbacks(memoryMonitor)
 		CleanupWorker.schedule(this, intervalMinutes = 15)

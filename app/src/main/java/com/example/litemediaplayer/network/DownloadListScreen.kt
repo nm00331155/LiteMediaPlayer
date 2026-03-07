@@ -34,6 +34,22 @@ fun DownloadListScreen(
         return
     }
 
+    val hasFinished = downloads.any { task ->
+        task.status == NetworkDownloadManager.DownloadStatus.COMPLETED ||
+            task.status == NetworkDownloadManager.DownloadStatus.FAILED
+    }
+
+    if (hasFinished) {
+        Button(
+            onClick = { downloadManager.removeCompleted() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+        ) {
+            Text(text = "完了/失敗を削除")
+        }
+    }
+
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth()

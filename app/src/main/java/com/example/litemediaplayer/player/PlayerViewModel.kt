@@ -18,6 +18,8 @@ import com.example.litemediaplayer.settings.PlayerRotation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -98,6 +100,8 @@ class PlayerViewModel @Inject constructor(
     private val deleteConfirmTarget = MutableStateFlow<VideoFolderUi?>(null)
     private val errorMessage = MutableStateFlow<String?>(null)
     private val refreshTick = MutableStateFlow(0L)
+    private val metadataCache = ConcurrentHashMap<Uri, Pair<Long, String?>>()
+    private val metadataLoading = AtomicBoolean(false)
 
     private val selectionState = combine(
         selectedFolderId,
@@ -119,11 +123,13 @@ class PlayerViewModel @Inject constructor(
         appSettingsStore.settingsFlow,
         refreshTick
     ) { folders, lockConfigs, settings, _ ->
-        buildFolderUiState(
+        val folderStates = buildFolderUiState(
             folders = folders,
             showHiddenLocked = settings.hiddenLockContentVisible,
             lockConfigs = lockConfigs
         )
+        loadMetadataAsync(folderStates)
+        folderStates
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -331,11 +337,56 @@ class PlayerViewModel @Inject constructor(
                 id = folder.id,
                 displayName = folder.displayName,
                 treeUri = folder.treeUri,
-                videos = resolveVideoItems(folder.treeUri),
+                videos = resolveVideoItemsWithMetadata(folder.treeUri),
                 isLocked = isLocked,
                 isLockEnabled = lockEnabled,
                 isHidden = isHidden
             )
+        }
+    }
+
+    private fun resolveVideoItemsWithMetadata(treeUriString: String): List<VideoItem> {
+        val items = resolveVideoItems(treeUriString)
+        return items.map { item ->
+            val cached = metadataCache[item.uri]
+            if (cached == null) {
+                item
+            } else {
+                item.copy(durationMs = cached.first, resolution = cached.second)
+            }
+        }
+    }
+
+    private fun loadMetadataAsync(folders: List<VideoFolderUi>) {
+        if (folders.isEmpty()) {
+            return
+        }
+
+        if (!metadataLoading.compareAndSet(false, true)) {
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            var hasUpdates = false
+            try {
+                folders
+                    .asSequence()
+                    .flatMap { it.videos.asSequence() }
+                    .map { it.uri }
+                    .distinct()
+                    .forEach { uri ->
+                        if (!metadataCache.containsKey(uri)) {
+                            metadataCache[uri] = resolveVideoMetadata(uri)
+                            hasUpdates = true
+                        }
+                    }
+            } finally {
+                metadataLoading.set(false)
+            }
+
+            if (hasUpdates) {
+                refresh()
+            }
         }
     }
 
@@ -357,13 +408,12 @@ class PlayerViewModel @Inject constructor(
 
         return files
             .map { document ->
-                val metadata = resolveVideoMetadata(document.uri)
                 VideoItem(
                     uri = document.uri,
                     displayName = document.name ?: "video",
                     size = document.length().coerceAtLeast(0L),
-                    durationMs = metadata.first,
-                    resolution = metadata.second,
+                    durationMs = 0L,
+                    resolution = null,
                     dateModified = document.lastModified().coerceAtLeast(0L)
                 )
             }

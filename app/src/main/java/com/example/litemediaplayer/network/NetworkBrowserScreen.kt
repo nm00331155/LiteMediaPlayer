@@ -9,6 +9,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -167,6 +169,14 @@ class NetworkBrowserViewModel @Inject constructor(
     private val downloadManager = NetworkDownloadManager.shared
 
     private val internalState = MutableStateFlow(NetworkBrowserInternalState())
+
+    init {
+        viewModelScope.launch {
+            appSettingsStore.settingsFlow.collect { settings ->
+                downloadManager.setMaxConcurrent(settings.maxConcurrentDownloads)
+            }
+        }
+    }
 
     val uiState: StateFlow<NetworkBrowserUiState> = combine(
         networkServerDao.observeAll(),
@@ -349,18 +359,20 @@ class NetworkBrowserViewModel @Inject constructor(
         }
 
         val server = uiState.value.selectedServer ?: return
-        val destination = uiState.value.downloadLocationUri
-            ?.toUri()
-            ?: Uri.parse("content://downloads/public_downloads")
+        val locationUri = uiState.value.downloadLocationUri
+        if (locationUri == null) {
+            postStatus("先に設定からダウンロード保存先を指定してください")
+            return
+        }
 
         downloadManager.enqueueDownload(
             sourceUri = item.path,
             server = server,
-            destinationUri = destination,
+            destinationUri = locationUri.toUri(),
             fileName = item.name,
             totalBytes = item.size
         )
-        postStatus("ダウンロードキューに追加しました: ${item.name}")
+        postStatus("キューに追加: ${item.name}")
     }
 
     fun downloadSelected() {
@@ -409,6 +421,7 @@ class NetworkBrowserViewModel @Inject constructor(
     fun updateMaxConcurrentDownloads(value: Int) {
         viewModelScope.launch {
             appSettingsStore.updateMaxConcurrentDownloads(value)
+            downloadManager.setMaxConcurrent(value)
         }
     }
 
@@ -1039,112 +1052,108 @@ private fun NetworkServerEditor(
     onEdit: (NetworkServer) -> Unit,
     onCancelEdit: () -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = if (editingServerId != null) "接続先を編集" else "接続先を追加",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                Text(
+                    text = if (editingServerId != null) "接続先を編集" else "接続先を追加",
+                    style = MaterialTheme.typography.titleMedium
+                )
 
-                    OutlinedTextField(
-                        value = input.name,
-                        onValueChange = onNameChange,
-                        label = { Text("表示名") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                OutlinedTextField(
+                    value = input.name,
+                    onValueChange = onNameChange,
+                    label = { Text("表示名") },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(Protocol.entries) { candidate ->
-                            androidx.compose.material3.FilterChip(
-                                selected = input.protocol == candidate,
-                                onClick = { onProtocolChange(candidate) },
-                                label = { Text(candidate.name) }
-                            )
-                        }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(Protocol.entries) { candidate ->
+                        androidx.compose.material3.FilterChip(
+                            selected = input.protocol == candidate,
+                            onClick = { onProtocolChange(candidate) },
+                            label = { Text(candidate.name) }
+                        )
                     }
+                }
 
-                    OutlinedTextField(
-                        value = input.host,
-                        onValueChange = onHostChange,
-                        label = { Text("ホスト名 / IP") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                OutlinedTextField(
+                    value = input.host,
+                    onValueChange = onHostChange,
+                    label = { Text("ホスト名 / IP") },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                    OutlinedTextField(
-                        value = input.port?.toString() ?: "",
-                        onValueChange = onPortChange,
-                        label = { Text("ポート (任意)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                OutlinedTextField(
+                    value = input.port?.toString() ?: "",
+                    onValueChange = onPortChange,
+                    label = { Text("ポート (任意)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                    OutlinedTextField(
-                        value = input.shareName.orEmpty(),
-                        onValueChange = onShareNameChange,
-                        label = { Text("共有名 (SMB)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                OutlinedTextField(
+                    value = input.shareName.orEmpty(),
+                    onValueChange = onShareNameChange,
+                    label = { Text("共有名 (SMB)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                    OutlinedTextField(
-                        value = input.basePath.orEmpty(),
-                        onValueChange = onBasePathChange,
-                        label = { Text("ベースパス") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                OutlinedTextField(
+                    value = input.basePath.orEmpty(),
+                    onValueChange = onBasePathChange,
+                    label = { Text("ベースパス") },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                    OutlinedTextField(
-                        value = input.username.orEmpty(),
-                        onValueChange = onUsernameChange,
-                        label = { Text("ユーザー名") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                OutlinedTextField(
+                    value = input.username.orEmpty(),
+                    onValueChange = onUsernameChange,
+                    label = { Text("ユーザー名") },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                    OutlinedTextField(
-                        value = input.password.orEmpty(),
-                        onValueChange = onPasswordChange,
-                        label = { Text("パスワード") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                OutlinedTextField(
+                    value = input.password.orEmpty(),
+                    onValueChange = onPasswordChange,
+                    label = { Text("パスワード") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onTestConnection, enabled = !isTesting) {
-                            Text(if (isTesting) "テスト中..." else "接続テスト")
-                        }
-                        Button(onClick = onSave) {
-                            Text(if (editingServerId != null) "更新" else "保存")
-                        }
-                        if (editingServerId != null) {
-                            OutlinedButton(onClick = onCancelEdit) {
-                                Text("キャンセル")
-                            }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onTestConnection, enabled = !isTesting) {
+                        Text(if (isTesting) "テスト中..." else "接続テスト")
+                    }
+                    Button(onClick = onSave) {
+                        Text(if (editingServerId != null) "更新" else "保存")
+                    }
+                    if (editingServerId != null) {
+                        OutlinedButton(onClick = onCancelEdit) {
+                            Text("キャンセル")
                         }
                     }
                 }
             }
         }
 
-        item {
-            Text("登録サーバー", style = MaterialTheme.typography.titleMedium)
-        }
+        Text("登録サーバー", style = MaterialTheme.typography.titleMedium)
 
         if (servers.isEmpty()) {
-            item {
-                Text("登録されたサーバーはありません")
-            }
+            Text("登録されたサーバーはありません")
         } else {
-            items(servers, key = { it.id }) { server ->
+            servers.forEach { server ->
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant
