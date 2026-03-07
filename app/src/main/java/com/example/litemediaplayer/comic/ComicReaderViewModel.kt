@@ -343,6 +343,17 @@ class ComicReaderViewModel @Inject constructor(
             }
             .sortedBy { file -> file.name?.lowercase(Locale.getDefault()) }
 
+        val needsProcessing = settings.autoTrimEnabled || settings.autoSplitEnabled
+        if (!needsProcessing) {
+            return imageFiles.mapIndexed { index, file ->
+                ComicPage(
+                    index = index,
+                    model = file.uri,
+                    sourceName = file.name ?: "page"
+                )
+            }
+        }
+
         return buildPageModelsFromDocuments(imageFiles, settings)
     }
 
@@ -367,6 +378,19 @@ class ComicReaderViewModel @Inject constructor(
             ?.filter { file -> file.isFile && file.name.hasImageExtension() }
             ?.sortedBy { file -> file.name.lowercase(Locale.getDefault()) }
             .orEmpty()
+
+        AppLogger.i("ComicReader", "Archive extracted: ${pages.size} pages from $fileName")
+
+        val needsProcessing = settings.autoTrimEnabled || settings.autoSplitEnabled
+        if (!needsProcessing) {
+            return pages.mapIndexed { index, file ->
+                ComicPage(
+                    index = index,
+                    model = file.toUri(),
+                    sourceName = file.name
+                )
+            }
+        }
 
         return buildPageModelsFromFiles(pages, settings)
     }
@@ -432,39 +456,48 @@ class ComicReaderViewModel @Inject constructor(
     ): List<Uri> {
         return withContext(Dispatchers.IO) {
             try {
-                val sourceBytes = openStream()?.use { it.readBytes() } ?: return@withContext emptyList()
-                AppLogger.d("ComicReader", "Processing page: $sourceName (${sourceBytes.size} bytes)")
+                var sourceBytes: ByteArray? = openStream()?.use { it.readBytes() }
+                    ?: return@withContext emptyList()
+                val bytes = sourceBytes ?: return@withContext emptyList()
+                AppLogger.d("ComicReader", "Processing page: $sourceName (${bytes.size} bytes)")
 
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size, bounds)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                     AppLogger.w(
                         "ComicReader",
                         "Invalid image: $sourceName (${bounds.outWidth}x${bounds.outHeight})"
                     )
+                    sourceBytes = null
                     return@withContext emptyList()
                 }
 
                 AppLogger.d("ComicReader", "Image size: ${bounds.outWidth}x${bounds.outHeight}")
 
                 if (!settings.autoTrimEnabled && !settings.autoSplitEnabled) {
-                    return@withContext writeSingleTempPage(sourceBytes, sourceName)
+                    val result = writeSingleTempPage(bytes, sourceName)
+                    sourceBytes = null
+                    return@withContext result
                 }
 
                 val processed = runCatching {
-                    pageProcessor.process(bytes = sourceBytes, settings = settings)
+                    pageProcessor.process(bytes = bytes, settings = settings)
                 }.getOrElse { error ->
                     AppLogger.w("ComicReader", "PageProcessor failed for $sourceName", error)
                     emptyList()
                 }
 
                 if (processed.isEmpty()) {
-                    return@withContext writeSingleTempPage(sourceBytes, sourceName)
+                    val result = writeSingleTempPage(bytes, sourceName)
+                    sourceBytes = null
+                    return@withContext result
                 }
 
                 val fullRect = android.graphics.Rect(0, 0, bounds.outWidth, bounds.outHeight)
                 if (processed.size == 1 && processed.first().rect == fullRect) {
-                    return@withContext writeSingleTempPage(sourceBytes, sourceName)
+                    val result = writeSingleTempPage(bytes, sourceName)
+                    sourceBytes = null
+                    return@withContext result
                 }
 
                 val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
@@ -475,11 +508,12 @@ class ComicReaderViewModel @Inject constructor(
                 }
                 val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
                 val sourceBitmap = BitmapFactory.decodeByteArray(
-                    sourceBytes,
+                    bytes,
                     0,
-                    sourceBytes.size,
+                    bytes.size,
                     decodeOptions
                 ) ?: return@withContext emptyList()
+                sourceBytes = null
 
                 val scaleX = sourceBitmap.width.toFloat() / bounds.outWidth.toFloat().coerceAtLeast(1f)
                 val scaleY = sourceBitmap.height.toFloat() / bounds.outHeight.toFloat().coerceAtLeast(1f)

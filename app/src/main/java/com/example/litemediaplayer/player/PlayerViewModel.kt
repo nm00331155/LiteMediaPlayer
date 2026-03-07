@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -20,7 +21,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
@@ -104,7 +104,7 @@ class PlayerViewModel @Inject constructor(
     private val refreshTick = MutableStateFlow(0L)
     private val videoItemsCache = ConcurrentHashMap<String, List<VideoItem>>()
     private val metadataCache = ConcurrentHashMap<Uri, Pair<Long, String?>>()
-    private val metadataLoading = AtomicBoolean(false)
+    private val metadataLoadingFolders = ConcurrentHashMap<String, Boolean>()
     private val scanningFolders = ConcurrentHashMap<String, Boolean>()
 
     private val selectionState = combine(
@@ -177,23 +177,29 @@ class PlayerViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            combine(selectedFolderId, folderDao.observeAll()) { selectedId, folders ->
-                when {
-                    folders.isEmpty() -> null
-                    selectedId == null -> folders.first()
-                    else -> folders.firstOrNull { it.id == selectedId } ?: folders.first()
-                }
-            }.collect { targetFolder ->
-                if (targetFolder == null) {
+            selectedFolderId.collect { folderId ->
+                if (folderId == null) {
                     return@collect
                 }
 
-                if (selectedFolderId.value != targetFolder.id) {
-                    selectedFolderId.value = targetFolder.id
+                val folder = folderDao.findById(folderId) ?: return@collect
+                if (!videoItemsCache.containsKey(folder.treeUri)) {
+                    scanFolderAsync(folder)
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            folderDao.observeAll().collect { folders ->
+                if (folders.isEmpty()) {
+                    selectedFolderId.value = null
+                    return@collect
                 }
 
-                if (!videoItemsCache.containsKey(targetFolder.treeUri)) {
-                    scanFolderAsync(targetFolder)
+                val selectedId = selectedFolderId.value
+                val hasSelected = selectedId != null && folders.any { it.id == selectedId }
+                if (!hasSelected) {
+                    selectedFolderId.value = folders.first().id
                 }
             }
         }
@@ -292,8 +298,7 @@ class PlayerViewModel @Inject constructor(
 
     fun syncFolder(folder: VideoFolderUi) {
         videoItemsCache.remove(folder.treeUri)
-        AppLogger.d("PlayerVM", "Sync requested: ${folder.displayName}")
-        refresh()
+        AppLogger.d("PlayerVM", "Force sync: ${folder.displayName}")
 
         if (selectedFolderId.value != folder.id) {
             selectedFolderId.value = folder.id
@@ -422,13 +427,13 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun loadMetadataForFolder(treeUri: String) {
-        if (!metadataLoading.compareAndSet(false, true)) {
+        if (metadataLoadingFolders.putIfAbsent(treeUri, true) != null) {
             return
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            var hasUpdates = false
             try {
+                var hasUpdates = false
                 val items = videoItemsCache[treeUri].orEmpty()
                 items.forEach { item ->
                     if (!metadataCache.containsKey(item.uri)) {
@@ -442,21 +447,21 @@ class PlayerViewModel @Inject constructor(
                         hasUpdates = true
                     }
                 }
-            } finally {
-                metadataLoading.set(false)
-            }
 
-            if (hasUpdates) {
-                val currentItems = videoItemsCache[treeUri].orEmpty()
-                videoItemsCache[treeUri] = currentItems.map { item ->
-                    val metadata = metadataCache[item.uri]
-                    if (metadata == null) {
-                        item
-                    } else {
-                        item.copy(durationMs = metadata.first, resolution = metadata.second)
+                if (hasUpdates) {
+                    val currentItems = videoItemsCache[treeUri].orEmpty()
+                    videoItemsCache[treeUri] = currentItems.map { item ->
+                        val metadata = metadataCache[item.uri]
+                        if (metadata == null) {
+                            item
+                        } else {
+                            item.copy(durationMs = metadata.first, resolution = metadata.second)
+                        }
                     }
+                    refresh()
                 }
-                refresh()
+            } finally {
+                metadataLoadingFolders.remove(treeUri)
             }
         }
     }
@@ -466,33 +471,89 @@ class PlayerViewModel @Inject constructor(
 
         AppLogger.d("PlayerVM", "Scanning folder: $treeUriString")
         val scanStart = System.currentTimeMillis()
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUriString)) ?: return emptyList()
-        val queue = ArrayDeque<DocumentFile>()
-        val files = mutableListOf<DocumentFile>()
-        queue.add(root)
+        val treeUri = Uri.parse(treeUriString)
+        val treeDocumentId = runCatching {
+            DocumentsContract.getTreeDocumentId(treeUri)
+        }.getOrElse {
+            AppLogger.w("PlayerVM", "Invalid tree uri: $treeUriString", it)
+            return emptyList()
+        }
+
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+
+        val queue = ArrayDeque<Uri>()
+        queue.add(DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocumentId))
+        val videos = mutableListOf<VideoItem>()
 
         while (queue.isNotEmpty()) {
             val current = queue.removeFirst()
-            current.listFiles().forEach { document ->
-                when {
-                    document.isDirectory -> queue.add(document)
-                    document.isFile && isSupportedVideo(document) -> files.add(document)
+            runCatching {
+                context.contentResolver.query(current, projection, null, null, null)?.use { cursor ->
+                    val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val sizeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                    val modifiedCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+
+                    while (cursor.moveToNext()) {
+                        val docId = if (idCol >= 0 && !cursor.isNull(idCol)) {
+                            cursor.getString(idCol)
+                        } else {
+                            continue
+                        }
+
+                        val name = if (nameCol >= 0 && !cursor.isNull(nameCol)) {
+                            cursor.getString(nameCol)
+                        } else {
+                            ""
+                        }
+
+                        val mimeType = if (mimeCol >= 0 && !cursor.isNull(mimeCol)) {
+                            cursor.getString(mimeCol)
+                        } else {
+                            ""
+                        }
+
+                        if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            queue.add(
+                                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+                            )
+                        } else if (isSupportedVideoName(name)) {
+                            val size = if (sizeCol >= 0 && !cursor.isNull(sizeCol)) {
+                                cursor.getLong(sizeCol)
+                            } else {
+                                0L
+                            }
+
+                            val modified = if (modifiedCol >= 0 && !cursor.isNull(modifiedCol)) {
+                                cursor.getLong(modifiedCol)
+                            } else {
+                                0L
+                            }
+
+                            videos += VideoItem(
+                                uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId),
+                                displayName = name.ifBlank { "video" },
+                                size = size.coerceAtLeast(0L),
+                                durationMs = 0L,
+                                resolution = null,
+                                dateModified = modified.coerceAtLeast(0L)
+                            )
+                        }
+                    }
                 }
+            }.onFailure { error ->
+                AppLogger.w("PlayerVM", "Folder query failed: $current", error)
             }
         }
 
-        val scanned = files
-            .map { document ->
-                VideoItem(
-                    uri = document.uri,
-                    displayName = document.name ?: "video",
-                    size = document.length().coerceAtLeast(0L),
-                    durationMs = 0L,
-                    resolution = null,
-                    dateModified = document.lastModified().coerceAtLeast(0L)
-                )
-            }
-            .sortedBy { it.displayName.lowercase() }
+        val scanned = videos.sortedBy { it.displayName.lowercase() }
 
         val elapsed = System.currentTimeMillis() - scanStart
         AppLogger.d(
@@ -503,11 +564,8 @@ class PlayerViewModel @Inject constructor(
         return scanned
     }
 
-    private fun isSupportedVideo(file: DocumentFile): Boolean {
-        val ext = file.name
-            ?.substringAfterLast('.', "")
-            ?.lowercase()
-            ?: return false
+    private fun isSupportedVideoName(name: String): Boolean {
+        val ext = name.substringAfterLast('.', "").lowercase()
         return ext in SUPPORTED_VIDEO_EXTENSIONS
     }
 

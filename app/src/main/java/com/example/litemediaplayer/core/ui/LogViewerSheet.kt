@@ -3,6 +3,8 @@ package com.example.litemediaplayer.core.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -64,10 +66,18 @@ fun LogViewerSheet(
                                 AppLogger.export()
                             )
                         )
+                        Toast.makeText(context, "コピーしました", Toast.LENGTH_SHORT).show()
                     }) {
                         Text("コピー")
                     }
-                    Button(onClick = { AppLogger.shareLogFile(context) }) {
+                    Button(onClick = {
+                        val intent = AppLogger.createShareIntent(context)
+                        if (intent != null) {
+                            context.startActivity(Intent.createChooser(intent, "ログを共有"))
+                        } else {
+                            Toast.makeText(context, "ログファイルがありません", Toast.LENGTH_SHORT).show()
+                        }
+                    }) {
                         Text("共有")
                     }
                     Button(onClick = AppLogger::clear) {
@@ -78,7 +88,7 @@ fun LogViewerSheet(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(items = logs, key = { entry -> "${entry.timestamp}-${entry.tag}-${entry.level}" }) { entry ->
+                    items(items = logs, key = { entry -> entry.id }) { entry ->
                         val color = when (entry.level) {
                             "E" -> Color.Red
                             "W" -> Color(0xFFFF9800)

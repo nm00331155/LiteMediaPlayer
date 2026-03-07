@@ -211,8 +211,9 @@ fun PlayerScreen(
                     FilterChip(
                         selected = folder.id == uiState.selectedFolderId,
                         onClick = {
-                            viewModel.selectFolder(folder.id)
-                            viewModel.syncFolder(folder)
+                            if (folder.id != uiState.selectedFolderId) {
+                                viewModel.selectFolder(folder.id)
+                            }
                         },
                         label = {
                             Text(
