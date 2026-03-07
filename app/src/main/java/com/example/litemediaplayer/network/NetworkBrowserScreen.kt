@@ -66,6 +66,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.core.ui.PageSettingsSheet
 import com.example.litemediaplayer.settings.AppSettingsStore
 import com.hierynomus.msfscc.FileAttributes
@@ -74,6 +75,7 @@ import com.hierynomus.smbj.auth.AuthenticationContext
 import com.hierynomus.smbj.share.DiskShare
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.util.ArrayDeque
 import java.util.Base64
 import javax.xml.parsers.DocumentBuilderFactory
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -374,6 +376,74 @@ class NetworkBrowserViewModel @Inject constructor(
             totalBytes = item.size
         )
         postStatus("キューに追加: ${item.name}")
+    }
+
+    fun downloadFolder(folder: NetworkFile) {
+        if (!folder.isDirectory) {
+            return
+        }
+
+        val server = uiState.value.selectedServer ?: return
+        val locationUri = uiState.value.downloadLocationUri
+        if (locationUri == null) {
+            postStatus("ダウンロード先を設定してください")
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            postStatus("フォルダをスキャン中: ${folder.name}")
+            try {
+                val allFiles = collectFilesRecursively(server, folder.path)
+                if (allFiles.isEmpty()) {
+                    postStatus("ダウンロード可能なファイルがありません: ${folder.name}")
+                    return@launch
+                }
+
+                allFiles.forEach { file ->
+                    val relativePath = file.path.removePrefix(folder.path).removePrefix("/")
+                    val safeFileName = relativePath.replace("/", "_")
+                    downloadManager.enqueueDownload(
+                        sourceUri = file.path,
+                        server = server,
+                        destinationUri = locationUri.toUri(),
+                        fileName = safeFileName.ifBlank { file.name },
+                        totalBytes = file.size
+                    )
+                }
+
+                postStatus("${allFiles.size} 件をキューに追加: ${folder.name}")
+            } catch (error: Exception) {
+                AppLogger.e("NetworkBrowser", "Folder download scan failed: ${folder.name}", error)
+                postStatus("フォルダスキャン失敗: ${error.message}")
+            }
+        }
+    }
+
+    private suspend fun collectFilesRecursively(
+        server: NetworkServer,
+        path: String
+    ): List<NetworkFile> {
+        val result = mutableListOf<NetworkFile>()
+        val queue = ArrayDeque<String>()
+        queue.add(path)
+
+        while (queue.isNotEmpty()) {
+            val currentPath = queue.removeFirst()
+            val files = runCatching {
+                listFiles(server, currentPath)
+            }.getOrElse {
+                emptyList()
+            }
+            for (file in files) {
+                if (file.isDirectory) {
+                    queue.add(file.path)
+                } else {
+                    result.add(file)
+                }
+            }
+        }
+
+        return result
     }
 
     fun downloadSelected() {
@@ -1007,8 +1077,20 @@ fun NetworkBrowserScreen(
                                         viewModel.showFileAction(item)
                                     }
                                 },
-                                onLongPress = { viewModel.toggleSelection(item) },
-                                onDownload = { viewModel.downloadFile(item) }
+                                onLongPress = {
+                                    if (item.isDirectory) {
+                                        viewModel.showFileAction(item)
+                                    } else {
+                                        viewModel.toggleSelection(item)
+                                    }
+                                },
+                                onDownload = {
+                                    if (item.isDirectory) {
+                                        viewModel.downloadFolder(item)
+                                    } else {
+                                        viewModel.downloadFile(item)
+                                    }
+                                }
                             )
                         }
 
@@ -1067,7 +1149,11 @@ fun NetworkBrowserScreen(
                 viewModel.dismissAction()
             },
             onDownload = {
-                viewModel.downloadFile(file)
+                if (file.isDirectory) {
+                    viewModel.downloadFolder(file)
+                } else {
+                    viewModel.downloadFile(file)
+                }
                 viewModel.dismissAction()
             },
             onDismiss = viewModel::dismissAction
@@ -1332,10 +1418,8 @@ private fun NetworkFileItem(
             }
         }
 
-        if (!item.isDirectory) {
-            IconButton(onClick = onDownload) {
-                Icon(Icons.Default.Download, contentDescription = "ダウンロード")
-            }
+        IconButton(onClick = onDownload) {
+            Icon(Icons.Default.Download, contentDescription = "ダウンロード")
         }
     }
 }
@@ -1354,21 +1438,32 @@ private fun FileActionDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "サイズ: ${formatFileSize(file.size)}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-
-                if (file.isVideo || file.isComic) {
-                    Button(onClick = onStream, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Text("ストリーミング")
+                if (file.isDirectory) {
+                    Text(
+                        text = "フォルダ",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Text("  フォルダごとダウンロード")
                     }
-                }
+                } else {
+                    Text(
+                        text = "サイズ: ${formatFileSize(file.size)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
 
-                Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Download, contentDescription = null)
-                    Text("ダウンロード")
+                    if (file.isVideo || file.isComic) {
+                        Button(onClick = onStream, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null)
+                            Text("  ストリーミング再生")
+                        }
+                    }
+
+                    Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Text("  ダウンロード")
+                    }
                 }
             }
         },

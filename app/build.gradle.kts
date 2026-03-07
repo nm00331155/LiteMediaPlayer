@@ -54,6 +54,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            output.outputFileName = "LiteMediaPlayer-${variant.buildType.name}.apk"
+        }
+    }
 }
 
 dependencies {
@@ -104,4 +112,28 @@ dependencies {
 
 kapt {
     correctErrorTypes = true
+}
+
+tasks.register("copyApkToLocal") {
+    dependsOn("assembleDebug")
+    doLast {
+        copy {
+            from(layout.buildDirectory.dir("outputs/apk/debug"))
+            include("*.apk")
+            into("D:\\copilot_script\\multiviewer")
+            rename { "LiteMediaPlayer.apk" }
+        }
+    }
+}
+
+tasks.register("copyReleaseApkToLocal") {
+    dependsOn("assembleRelease")
+    doLast {
+        copy {
+            from(layout.buildDirectory.dir("outputs/apk/release"))
+            include("*.apk")
+            into("D:\\copilot_script\\multiviewer")
+            rename { "LiteMediaPlayer.apk" }
+        }
+    }
 }

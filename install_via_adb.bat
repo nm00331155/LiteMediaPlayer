@@ -3,6 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
 set "APK_PATH=%SCRIPT_DIR%app\build\outputs\apk\debug\app-debug.apk"
+set "ALT_APK_PATH=%SCRIPT_DIR%app\build\outputs\apk\debug\LiteMediaPlayer-debug.apk"
 set "PACKAGE_NAME=com.example.litemediaplayer"
 set "MAIN_ACTIVITY=.MainActivity"
 
@@ -85,6 +86,20 @@ if "!SKIP_BUILD!"=="0" (
 
 if not "!SKIP_BUILD!"=="0" echo [INFO] Build skipped (--no-build).
 
+if not exist "%APK_PATH%" (
+    if exist "%ALT_APK_PATH%" (
+        set "APK_PATH=%ALT_APK_PATH%"
+    )
+)
+
+if not exist "%APK_PATH%" (
+    for /f "delims=" %%F in ('dir /b /a:-d "%SCRIPT_DIR%app\build\outputs\apk\debug\*.apk" 2^>nul') do (
+        set "APK_PATH=%SCRIPT_DIR%app\build\outputs\apk\debug\%%F"
+        goto :apk_resolved
+    )
+)
+
+:apk_resolved
 if not exist "%APK_PATH%" (
     echo [ERROR] APK not found: "%APK_PATH%"
     exit /b 1
