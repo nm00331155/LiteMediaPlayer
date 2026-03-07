@@ -23,6 +23,16 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.LiteMediaPlayer"
         android:usesCleartextTraffic="true">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.logprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/log_file_paths" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

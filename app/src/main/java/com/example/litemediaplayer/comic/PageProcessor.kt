@@ -67,7 +67,17 @@ class PageProcessor @Inject constructor(
 
         var trimRect = Rect(0, 0, width, height)
         if (settings.autoTrimEnabled) {
-            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            val maxDim = maxOf(width, height)
+            val sampleSize = when {
+                maxDim > 6_000 -> 8
+                maxDim > 3_000 -> 4
+                maxDim > 1_500 -> 2
+                else -> 1
+            }
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+            }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
             if (bitmap != null) {
                 val threshold = settings.trimSensitivity.threshold
                 val bounds = trimmer.detectBounds(
@@ -76,13 +86,22 @@ class PageProcessor @Inject constructor(
                     contentThreshold = threshold,
                     safetyMargin = settings.trimSafetyMargin
                 )
-                trimRect = bounds.toRect()
+                trimRect = Rect(
+                    (bounds.left * sampleSize).coerceIn(0, width),
+                    (bounds.top * sampleSize).coerceIn(0, height),
+                    (bounds.right * sampleSize).coerceIn(0, width),
+                    (bounds.bottom * sampleSize).coerceIn(0, height)
+                )
                 bitmap.recycle()
             }
         }
 
         @Suppress("DEPRECATION")
-        val decoder = BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false)
+        val decoder = runCatching {
+            BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false)
+        }.getOrElse {
+            return listOf(ProcessedPage(rect = trimRect, wasSplit = false))
+        }
 
         return try {
             val trimmedWidth = trimRect.width()

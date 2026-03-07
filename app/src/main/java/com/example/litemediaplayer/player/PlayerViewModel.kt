@@ -23,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -104,6 +105,7 @@ class PlayerViewModel @Inject constructor(
     private val videoItemsCache = ConcurrentHashMap<String, List<VideoItem>>()
     private val metadataCache = ConcurrentHashMap<Uri, Pair<Long, String?>>()
     private val metadataLoading = AtomicBoolean(false)
+    private val scanningFolders = ConcurrentHashMap<String, Boolean>()
 
     private val selectionState = combine(
         selectedFolderId,
@@ -125,13 +127,11 @@ class PlayerViewModel @Inject constructor(
         appSettingsStore.settingsFlow,
         refreshTick
     ) { folders, lockConfigs, settings, _ ->
-        val folderStates = buildFolderUiState(
+        buildFolderShells(
             folders = folders,
             showHiddenLocked = settings.hiddenLockContentVisible,
             lockConfigs = lockConfigs
         )
-        loadMetadataAsync(folderStates)
-        folderStates
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -174,6 +174,30 @@ class PlayerViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = PlayerUiState()
     )
+
+    init {
+        viewModelScope.launch {
+            combine(selectedFolderId, folderDao.observeAll()) { selectedId, folders ->
+                when {
+                    folders.isEmpty() -> null
+                    selectedId == null -> folders.first()
+                    else -> folders.firstOrNull { it.id == selectedId } ?: folders.first()
+                }
+            }.collect { targetFolder ->
+                if (targetFolder == null) {
+                    return@collect
+                }
+
+                if (selectedFolderId.value != targetFolder.id) {
+                    selectedFolderId.value = targetFolder.id
+                }
+
+                if (!videoItemsCache.containsKey(targetFolder.treeUri)) {
+                    scanFolderAsync(targetFolder)
+                }
+            }
+        }
+    }
 
     fun addVideoFolder(folderUri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -267,12 +291,18 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun syncFolder(folder: VideoFolderUi) {
-        if (selectedFolderId.value != folder.id) {
-            selectedFolderId.value = folder.id
-        }
         videoItemsCache.remove(folder.treeUri)
         AppLogger.d("PlayerVM", "Sync requested: ${folder.displayName}")
         refresh()
+
+        if (selectedFolderId.value != folder.id) {
+            selectedFolderId.value = folder.id
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val target = folderDao.findById(folder.id) ?: return@launch
+            scanFolderAsync(target)
+        }
     }
 
     fun consumeError() {
@@ -324,7 +354,7 @@ class PlayerViewModel @Inject constructor(
         refresh()
     }
 
-    private suspend fun buildFolderUiState(
+    private suspend fun buildFolderShells(
         folders: List<VideoFolder>,
         showHiddenLocked: Boolean,
         lockConfigs: List<com.example.litemediaplayer.data.LockConfig>
@@ -343,11 +373,25 @@ class PlayerViewModel @Inject constructor(
                 return@mapNotNull null
             }
 
+            val cachedVideos = videoItemsCache[folder.treeUri]
+                ?.map { item ->
+                    val cachedMetadata = metadataCache[item.uri]
+                    if (cachedMetadata == null) {
+                        item
+                    } else {
+                        item.copy(
+                            durationMs = cachedMetadata.first,
+                            resolution = cachedMetadata.second
+                        )
+                    }
+                }
+                .orEmpty()
+
             VideoFolderUi(
                 id = folder.id,
                 displayName = folder.displayName,
                 treeUri = folder.treeUri,
-                videos = resolveVideoItemsWithMetadata(folder.treeUri),
+                videos = cachedVideos,
                 isLocked = isLocked,
                 isLockEnabled = lockEnabled,
                 isHidden = isHidden
@@ -355,23 +399,29 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    private fun resolveVideoItemsWithMetadata(treeUriString: String): List<VideoItem> {
-        val items = resolveVideoItems(treeUriString)
-        return items.map { item ->
-            val cached = metadataCache[item.uri]
-            if (cached == null) {
-                item
-            } else {
-                item.copy(durationMs = cached.first, resolution = cached.second)
+    private fun scanFolderAsync(folder: VideoFolder) {
+        if (scanningFolders.putIfAbsent(folder.treeUri, true) != null) {
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val scanStart = System.currentTimeMillis()
+            try {
+                AppLogger.d("PlayerVM", "Async scan start: ${folder.displayName}")
+                resolveVideoItems(folder.treeUri)
+                val elapsed = System.currentTimeMillis() - scanStart
+                AppLogger.d("PlayerVM", "Async scan done: ${folder.displayName} (${elapsed}ms)")
+                refresh()
+                loadMetadataForFolder(folder.treeUri)
+            } catch (error: Exception) {
+                AppLogger.e("PlayerVM", "Async scan failed: ${folder.displayName}", error)
+            } finally {
+                scanningFolders.remove(folder.treeUri)
             }
         }
     }
 
-    private fun loadMetadataAsync(folders: List<VideoFolderUi>) {
-        if (folders.isEmpty()) {
-            return
-        }
-
+    private fun loadMetadataForFolder(treeUri: String) {
         if (!metadataLoading.compareAndSet(false, true)) {
             return
         }
@@ -379,37 +429,31 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             var hasUpdates = false
             try {
-                folders
-                    .asSequence()
-                    .flatMap { it.videos.asSequence() }
-                    .map { it.uri }
-                    .distinct()
-                    .forEach { uri ->
-                        if (!metadataCache.containsKey(uri)) {
-                            val start = System.currentTimeMillis()
-                            metadataCache[uri] = resolveVideoMetadata(uri)
-                            val elapsed = System.currentTimeMillis() - start
-                            AppLogger.d(
-                                "PlayerVM",
-                                "Metadata loaded: ${uri.lastPathSegment ?: uri} (${elapsed}ms)"
-                            )
-                            hasUpdates = true
-                        }
+                val items = videoItemsCache[treeUri].orEmpty()
+                items.forEach { item ->
+                    if (!metadataCache.containsKey(item.uri)) {
+                        val start = System.currentTimeMillis()
+                        metadataCache[item.uri] = resolveVideoMetadata(item.uri)
+                        val elapsed = System.currentTimeMillis() - start
+                        AppLogger.d(
+                            "PlayerVM",
+                            "Metadata loaded: ${item.displayName} (${elapsed}ms)"
+                        )
+                        hasUpdates = true
                     }
+                }
             } finally {
                 metadataLoading.set(false)
             }
 
             if (hasUpdates) {
-                videoItemsCache.keys.forEach { treeUri ->
-                    val cachedItems = videoItemsCache[treeUri].orEmpty()
-                    videoItemsCache[treeUri] = cachedItems.map { item ->
-                        val cached = metadataCache[item.uri]
-                        if (cached == null) {
-                            item
-                        } else {
-                            item.copy(durationMs = cached.first, resolution = cached.second)
-                        }
+                val currentItems = videoItemsCache[treeUri].orEmpty()
+                videoItemsCache[treeUri] = currentItems.map { item ->
+                    val metadata = metadataCache[item.uri]
+                    if (metadata == null) {
+                        item
+                    } else {
+                        item.copy(durationMs = metadata.first, resolution = metadata.second)
                     }
                 }
                 refresh()

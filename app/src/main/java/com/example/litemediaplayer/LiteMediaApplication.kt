@@ -3,6 +3,7 @@ package com.example.litemediaplayer
 import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.core.memory.CleanupWorker
 import com.example.litemediaplayer.core.memory.CoilConfig
 import com.example.litemediaplayer.core.memory.MemoryMonitor
@@ -16,6 +17,7 @@ class LiteMediaApplication : Application(), ImageLoaderFactory {
 
 	override fun onCreate() {
 		super.onCreate()
+		AppLogger.init(this)
 		NetworkDownloadManager.shared.init(this)
 		memoryMonitor = MemoryMonitor(this)
 		registerComponentCallbacks(memoryMonitor)

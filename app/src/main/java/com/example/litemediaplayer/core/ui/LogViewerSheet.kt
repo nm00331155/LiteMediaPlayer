@@ -67,6 +67,9 @@ fun LogViewerSheet(
                     }) {
                         Text("コピー")
                     }
+                    Button(onClick = { AppLogger.shareLogFile(context) }) {
+                        Text("共有")
+                    }
                     Button(onClick = AppLogger::clear) {
                         Text("クリア")
                     }

@@ -18,6 +18,9 @@ interface VideoFolderDao {
     @Query("SELECT COUNT(*) FROM video_folders WHERE treeUri = :treeUri")
     suspend fun countByTreeUri(treeUri: String): Int
 
+    @Query("SELECT * FROM video_folders WHERE id = :id LIMIT 1")
+    suspend fun findById(id: Long): VideoFolder?
+
     @Delete
     suspend fun delete(folder: VideoFolder)
 
