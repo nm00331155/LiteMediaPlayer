@@ -2,11 +2,8 @@ package com.example.litemediaplayer.player
 
 import android.app.Activity
 import android.content.Context
-import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import android.media.AudioManager
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -14,9 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -70,12 +65,10 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -109,11 +102,8 @@ import com.example.litemediaplayer.core.ui.PageSettingsSheet
 import com.example.litemediaplayer.settings.PlayerResizeMode
 import com.example.litemediaplayer.settings.PlayerRotation
 import androidx.compose.ui.text.input.KeyboardType
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -134,6 +124,13 @@ fun PlayerScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         uri?.let(viewModel::addVideoFolder)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            // タブを離れる時に非表示状態をリセット
+            viewModel.toggleHiddenFolderVisibility(false)
+        }
     }
 
     val selectedFolder = uiState.folders.find { it.id == uiState.selectedFolderId }
@@ -417,73 +414,11 @@ fun PlayerPlaybackScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var hasStartedPlayback by remember { mutableStateOf(false) }
     var lastInteractionAtMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
-    var seekPreviewBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var seekPreviewPositionMs by remember { mutableLongStateOf(0L) }
     var sliderWidthPx by remember { mutableStateOf(0) }
-    var previewJob by remember { mutableStateOf<Job?>(null) }
-    var seekPreviewRequestId by remember { mutableLongStateOf(0L) }
-    var seekRetriever by remember { mutableStateOf<MediaMetadataRetriever?>(null) }
-    var seekRetrieverFd by remember { mutableStateOf<ParcelFileDescriptor?>(null) }
-    var seekRetrieverInitialized by remember { mutableStateOf(false) }
-
-    val previewScope = rememberCoroutineScope()
-
-    LaunchedEffect(videoUri) {
-        if (seekRetrieverInitialized) {
-            return@LaunchedEffect
-        }
-        seekRetrieverInitialized = true
-
-        val initializedRetriever = withContext(Dispatchers.IO) {
-            runCatching {
-                val uri = Uri.parse(videoUri)
-                val retriever = MediaMetadataRetriever()
-                val descriptor: ParcelFileDescriptor? = if (uri.scheme == "content") {
-                    runCatching {
-                        context.contentResolver.openFileDescriptor(uri, "r")
-                    }.getOrNull()
-                } else {
-                    null
-                }
-
-                if (descriptor != null) {
-                    retriever.setDataSource(descriptor.fileDescriptor)
-                } else {
-                    retriever.setDataSource(context, uri)
-                }
-
-                val testDuration = retriever.extractMetadata(
-                    MediaMetadataRetriever.METADATA_KEY_DURATION
-                )
-                AppLogger.d("SeekPreview", "Retriever ready. duration=$testDuration")
-                retriever to descriptor
-            }.onFailure { error ->
-                AppLogger.e("SeekPreview", "Failed to init retriever for $videoUri", error)
-            }.getOrNull()
-        }
-
-        if (initializedRetriever != null) {
-            seekRetriever = initializedRetriever.first
-            seekRetrieverFd = initializedRetriever.second
-        }
-    }
 
     fun registerInteraction() {
         controlsVisible = true
         lastInteractionAtMs = SystemClock.elapsedRealtime()
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            AppLogger.d("SeekPreviewTrace", "Releasing seek preview resources")
-            previewJob?.cancel()
-            runCatching { seekRetriever?.release() }
-            runCatching { seekRetrieverFd?.close() }
-            seekRetriever = null
-            seekRetrieverFd = null
-            seekRetrieverInitialized = false
-            seekPreviewBitmap = null
-        }
     }
 
     PageSettingsSheet(
@@ -862,87 +797,16 @@ fun PlayerPlaybackScreen(
                     Slider(
                         value = sliderValue,
                         onValueChange = { value ->
-                            val wasDragging = isSliderDragging
                             registerInteraction()
                             isSliderDragging = true
                             sliderValue = value
-                            seekPreviewPositionMs = value.toLong()
-
-                            if (!wasDragging) {
-                                AppLogger.d(
-                                    "SeekPreviewTrace",
-                                    "Seek drag started at ${seekPreviewPositionMs}ms / duration=${durationMs}ms"
-                                )
-                            }
-
-                            previewJob?.cancel()
-                            val requestId = seekPreviewRequestId + 1L
-                            seekPreviewRequestId = requestId
-                            previewJob = previewScope.launch {
-                                delay(150)
-                                val positionMs = value.toLong()
-                                val positionUs = positionMs * 1_000L
-                                val retriever = seekRetriever
-                                if (retriever == null) {
-                                    AppLogger.w(
-                                        "SeekPreviewTrace",
-                                        "request#$requestId retriever is null"
-                                    )
-                                    return@launch
-                                }
-                                val decodeStartMs = SystemClock.elapsedRealtime()
-                                val bitmap = withContext(Dispatchers.IO) {
-                                    val frame = runCatching {
-                                        retriever.getFrameAtTime(
-                                            positionUs,
-                                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                                        )
-                                    }.getOrNull()
-
-                                    if (frame == null) {
-                                        AppLogger.w(
-                                            "SeekPreview",
-                                            "Frame extraction failed at ${positionMs}ms"
-                                        )
-                                    }
-
-                                    frame
-                                }
-                                val decodeElapsedMs =
-                                    SystemClock.elapsedRealtime() - decodeStartMs
-
-                                if (bitmap != null) {
-                                    seekPreviewBitmap = bitmap
-                                    AppLogger.d(
-                                        "SeekPreviewTrace",
-                                        "request#$requestId updated pos=${positionMs}ms elapsed=${decodeElapsedMs}ms size=${bitmap.width}x${bitmap.height}"
-                                    )
-                                } else {
-                                    AppLogger.w(
-                                        "SeekPreviewTrace",
-                                        "request#$requestId null pos=${positionMs}ms elapsed=${decodeElapsedMs}ms"
-                                    )
-                                }
-                            }
+                            // シーク中にプレイヤー自体を直接移動してフレームを表示する
+                            exoPlayer.seekTo(value.toLong())
                         },
                         onValueChangeFinished = {
                             registerInteraction()
-                            val finalPositionMs = sliderValue.toLong()
                             exoPlayer.seekTo(sliderValue.toLong())
                             isSliderDragging = false
-                            AppLogger.d(
-                                "SeekPreviewTrace",
-                                "Seek drag finished at ${finalPositionMs}ms; clear in 300ms"
-                            )
-                            previewJob?.cancel()
-                            previewJob = previewScope.launch {
-                                delay(300)
-                                seekPreviewBitmap = null
-                                AppLogger.d(
-                                    "SeekPreviewTrace",
-                                    "Seek preview bitmap cleared"
-                                )
-                            }
                         },
                         valueRange = 0f..(durationMs.takeIf { it > 0L }?.toFloat() ?: 1f)
                     )
@@ -950,52 +814,27 @@ fun PlayerPlaybackScreen(
                     if (isSliderDragging && durationMs > 0L) {
                         val density = LocalDensity.current
                         val fraction = (sliderValue / durationMs.toFloat()).coerceIn(0f, 1f)
-                        val thumbWidthDp = 160.dp
-                        val thumbHeightDp = 90.dp
-                        val thumbWidthPx = with(density) { thumbWidthDp.toPx() }
-                        val offsetXPx = (fraction * sliderWidthPx - thumbWidthPx / 2f)
-                            .coerceIn(0f, (sliderWidthPx - thumbWidthPx).coerceAtLeast(0f))
+                        val timeTextWidthDp = 80.dp
+                        val timeTextWidthPx = with(density) { timeTextWidthDp.toPx() }
+                        val offsetXPx = (fraction * sliderWidthPx - timeTextWidthPx / 2f)
+                            .coerceIn(0f, (sliderWidthPx - timeTextWidthPx).coerceAtLeast(0f))
 
                         Box(
                             modifier = Modifier
                                 .offset {
                                     IntOffset(
                                         offsetXPx.toInt(),
-                                        -with(density) { (thumbHeightDp + 12.dp).toPx() }.toInt()
+                                        -with(density) { 36.dp.toPx() }.toInt()
                                     )
                                 }
-                                .size(thumbWidthDp, thumbHeightDp)
-                                .background(Color.Black, RoundedCornerShape(6.dp))
-                                .border(1.dp, Color.White, RoundedCornerShape(6.dp))
+                                .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            val bitmap = seekPreviewBitmap
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = "シークプレビュー",
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "プレビュー取得中",
-                                        color = Color.White,
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
-                                }
-                            }
                             Text(
-                                text = formatDuration(seekPreviewPositionMs),
+                                text = formatDuration(sliderValue.toLong()),
                                 color = Color.White,
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .background(Color.Black.copy(alpha = 0.7f))
-                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                style = MaterialTheme.typography.labelMedium
                             )
                         }
                     }

@@ -195,6 +195,11 @@ class PlayerViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            // アプリ起動時は必ず非表示状態に戻す
+            appSettingsStore.updateHiddenLockContentVisible(false)
+        }
+
+        viewModelScope.launch {
             selectedFolderId.collect { folderId ->
                 if (folderId == null) {
                     return@collect

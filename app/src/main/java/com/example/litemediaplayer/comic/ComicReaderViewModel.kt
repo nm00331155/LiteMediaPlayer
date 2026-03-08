@@ -91,6 +91,11 @@ class ComicReaderViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            // アプリ起動時は必ず非表示状態に戻す
+            appSettingsStore.updateHiddenLockContentVisible(false)
+        }
+
+        viewModelScope.launch {
             combine(
                 comicBookDao.observeAll(),
                 lockConfigDao.getConfigsByType(LockTargetType.COMIC_SHELF.name),

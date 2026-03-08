@@ -47,6 +47,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -98,6 +99,13 @@ fun ComicShelfScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.registerComicArchive(uri, context.contentResolver)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            // タブを離れる時に非表示状態をリセット
+            viewModel.toggleHiddenComicVisibility(false)
         }
     }
 
