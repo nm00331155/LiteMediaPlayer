@@ -14,6 +14,8 @@ import com.github.junrar.Archive
 import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.data.ComicBook
 import com.example.litemediaplayer.data.ComicBookDao
+import com.example.litemediaplayer.data.ComicFolder
+import com.example.litemediaplayer.data.ComicFolderDao
 import com.example.litemediaplayer.data.LockConfigDao
 import com.example.litemediaplayer.lock.LockManager
 import com.example.litemediaplayer.lock.LockTargetType
@@ -45,6 +47,8 @@ data class ComicPage(
 )
 
 data class ComicReaderUiState(
+    val folders: List<ComicFolder> = emptyList(),
+    val selectedFolderId: Long? = null,
     val books: List<ComicBook> = emptyList(),
     val currentBookId: Long? = null,
     val pages: List<ComicPage> = emptyList(),
@@ -55,6 +59,7 @@ data class ComicReaderUiState(
 
 @HiltViewModel
 class ComicReaderViewModel @Inject constructor(
+    private val comicFolderDao: ComicFolderDao,
     private val comicBookDao: ComicBookDao,
     private val comicSettings: ComicSettings,
     private val pageProcessor: PageProcessor,
@@ -86,6 +91,19 @@ class ComicReaderViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            comicFolderDao.observeAll().collect { folders ->
+                _uiState.update { state ->
+                    val selected = state.selectedFolderId
+                    val resolvedSelected = if (selected != null && folders.none { it.id == selected }) {
+                        null
+                    } else {
+                        selected
+                    }
+                    state.copy(folders = folders, selectedFolderId = resolvedSelected)
+                }
+            }
+        }
+        viewModelScope.launch {
             comicSettings.settingsFlow.collect { settings ->
                 _uiState.update { it.copy(settings = settings) }
             }
@@ -109,18 +127,34 @@ class ComicReaderViewModel @Inject constructor(
                 return@launch
             }
 
+            val treeUriString = folderUri.toString()
+            val existingFolder = comicFolderDao.findByTreeUri(treeUriString)
+            if (existingFolder != null) {
+                _uiState.update { it.copy(errorMessage = "このフォルダは既に登録されています") }
+                return@launch
+            }
+
+            val folderName = root.name ?: "コミックフォルダ"
+            val folderId = comicFolderDao.upsert(
+                ComicFolder(
+                    displayName = folderName,
+                    treeUri = treeUriString
+                )
+            )
+
             val archives = mutableListOf<DocumentFile>()
             val imageFolders = mutableListOf<DocumentFile>()
             scanFolderRecursively(root, archives, imageFolders)
 
             if (archives.isEmpty() && imageFolders.isEmpty()) {
+                comicFolderDao.deleteById(folderId)
                 _uiState.update { it.copy(errorMessage = "アーカイブや画像が見つかりません") }
                 return@launch
             }
 
             var registeredCount = 0
+            var firstCover: String? = null
 
-            // アーカイブを個別登録
             for (archive in archives) {
                 val uriString = archive.uri.toString()
                 if (comicBookDao.findBySourceUri(uriString) != null) {
@@ -133,19 +167,22 @@ class ComicReaderViewModel @Inject constructor(
                     AppLogger.w("ComicReader", "Cover extract failed: $title", e)
                     null
                 }
+                if (firstCover == null) {
+                    firstCover = coverUri
+                }
                 comicBookDao.upsert(
                     ComicBook(
                         title = title,
                         sourceUri = uriString,
                         sourceType = "ARCHIVE",
                         coverUri = coverUri,
-                        totalPages = 0
+                        totalPages = 0,
+                        folderId = folderId
                     )
                 )
                 registeredCount++
             }
 
-            // 画像フォルダを登録
             for (folder in imageFolders) {
                 val uriString = folder.uri.toString()
                 if (comicBookDao.findBySourceUri(uriString) != null) {
@@ -158,19 +195,28 @@ class ComicReaderViewModel @Inject constructor(
                     .minByOrNull { it.name?.lowercase(Locale.getDefault()) ?: "" }
                     ?.uri
                     ?.toString()
+                if (firstCover == null) {
+                    firstCover = coverUri
+                }
                 comicBookDao.upsert(
                     ComicBook(
                         title = title,
                         sourceUri = uriString,
                         sourceType = "FOLDER",
                         coverUri = coverUri,
-                        totalPages = images.size
+                        totalPages = images.size,
+                        folderId = folderId
                     )
                 )
                 registeredCount++
             }
 
+            comicFolderDao.updateMeta(folderId, firstCover, registeredCount)
+
+            _uiState.update { it.copy(selectedFolderId = folderId) }
+
             if (registeredCount == 0) {
+                comicFolderDao.deleteById(folderId)
                 _uiState.update { it.copy(errorMessage = "新しい書籍はありませんでした（全て登録済み）") }
             } else {
                 AppLogger.i("ComicReader", "Registered $registeredCount books from folder")
@@ -356,6 +402,26 @@ class ComicReaderViewModel @Inject constructor(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun selectComicFolder(folderId: Long?) {
+        _uiState.update { it.copy(selectedFolderId = folderId) }
+    }
+
+    fun deleteComicFolder(folderId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            comicBookDao.deleteByFolder(folderId)
+            comicFolderDao.deleteById(folderId)
+            if (_uiState.value.selectedFolderId == folderId) {
+                _uiState.update { it.copy(selectedFolderId = null) }
+            }
+        }
+    }
+
+    fun toggleHiddenComicVisibility(show: Boolean) {
+        viewModelScope.launch {
+            appSettingsStore.updateHiddenLockContentVisible(show)
+        }
+    }
+
     fun deleteBook(bookId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             comicBookDao.deleteById(bookId)
@@ -376,6 +442,12 @@ class ComicReaderViewModel @Inject constructor(
     fun updateReaderMode(mode: ReaderMode) {
         viewModelScope.launch {
             comicSettings.updateMode(mode)
+        }
+    }
+
+    fun updateGridSize(size: GridSize) {
+        viewModelScope.launch {
+            comicSettings.updateGridSize(size)
         }
     }
 

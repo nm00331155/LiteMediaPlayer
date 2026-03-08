@@ -6,11 +6,14 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.media.AudioManager
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -82,7 +85,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -118,6 +123,8 @@ fun PlayerScreen(
     onOpenFolderManager: () -> Unit,
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+    val fragmentActivity = context as? FragmentActivity
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var titleTapCount by remember { mutableStateOf(0) }
@@ -169,7 +176,13 @@ fun PlayerScreen(
             onTogglePanelLock = viewModel::togglePlayerPanelLock,
             onToggleOrientationLock = viewModel::togglePlayerOrientationLock,
             onToggleSubtitleAutoLoad = viewModel::toggleSubtitleAutoLoad,
-            onClearFolderLocks = viewModel::clearAllFolderLocks
+            onClearFolderLocks = viewModel::clearAllFolderLocks,
+            onGestureSeekEnabledChange = viewModel::updateGestureSeekEnabled,
+            onGestureVolumeEnabledChange = viewModel::updateGestureVolumeEnabled,
+            onGestureBrightnessEnabledChange = viewModel::updateGestureBrightnessEnabled,
+            onGestureDoubleTapPlayPauseChange = viewModel::updateGestureDoubleTapPlayPause,
+            onGestureBrightnessZoneEndChange = viewModel::updateGestureBrightnessZoneEnd,
+            onGestureVolumeZoneStartChange = viewModel::updateGestureVolumeZoneStart
         )
     }
 
@@ -190,8 +203,35 @@ fun PlayerScreen(
 
                             if (titleTapCount >= 5) {
                                 titleTapCount = 0
-                                showHiddenFolders = !showHiddenFolders
-                                viewModel.toggleHiddenFolderVisibility(showHiddenFolders)
+                                val targetActivity = fragmentActivity
+                                if (targetActivity != null && !showHiddenFolders) {
+                                    val executor = ContextCompat.getMainExecutor(targetActivity)
+                                    val biometricPrompt = BiometricPrompt(
+                                        targetActivity,
+                                        executor,
+                                        object : BiometricPrompt.AuthenticationCallback() {
+                                            override fun onAuthenticationSucceeded(
+                                                result: BiometricPrompt.AuthenticationResult
+                                            ) {
+                                                showHiddenFolders = true
+                                                viewModel.toggleHiddenFolderVisibility(true)
+                                            }
+                                        }
+                                    )
+                                    val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                                        .setTitle("認証")
+                                        .setSubtitle("非表示フォルダを表示するには認証が必要です")
+                                        .setAllowedAuthenticators(
+                                            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                                                BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                                                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                                        )
+                                        .build()
+                                    biometricPrompt.authenticate(promptInfo)
+                                } else {
+                                    showHiddenFolders = false
+                                    viewModel.toggleHiddenFolderVisibility(false)
+                                }
                             }
                         }
                     )
@@ -370,23 +410,36 @@ fun PlayerPlaybackScreen(
     var previewJob by remember { mutableStateOf<Job?>(null) }
 
     val previewScope = rememberCoroutineScope()
-    val seekRetriever = remember(videoUri) {
+    val seekRetrieverState = remember(videoUri) {
         runCatching {
-            MediaMetadataRetriever().apply {
-                setDataSource(context, Uri.parse(videoUri))
+            val uri = Uri.parse(videoUri)
+            val retriever = MediaMetadataRetriever()
+            val descriptor: ParcelFileDescriptor? = if (uri.scheme == "content") {
+                context.contentResolver.openFileDescriptor(uri, "r")
+            } else {
+                null
             }
+
+            if (descriptor != null) {
+                retriever.setDataSource(descriptor.fileDescriptor)
+            } else {
+                retriever.setDataSource(context, uri)
+            }
+            retriever to descriptor
         }.getOrNull()
     }
+    val seekRetriever = seekRetrieverState?.first
 
     fun registerInteraction() {
         controlsVisible = true
         lastInteractionAtMs = SystemClock.elapsedRealtime()
     }
 
-    DisposableEffect(seekRetriever) {
+    DisposableEffect(seekRetrieverState) {
         onDispose {
             previewJob?.cancel()
-            runCatching { seekRetriever?.release() }
+            runCatching { seekRetrieverState?.first?.release() }
+            runCatching { seekRetrieverState?.second?.close() }
             seekPreviewBitmap = null
         }
     }
@@ -404,7 +457,13 @@ fun PlayerPlaybackScreen(
             onTogglePanelLock = viewModel::togglePlayerPanelLock,
             onToggleOrientationLock = viewModel::togglePlayerOrientationLock,
             onToggleSubtitleAutoLoad = viewModel::toggleSubtitleAutoLoad,
-            onClearFolderLocks = viewModel::clearAllFolderLocks
+            onClearFolderLocks = viewModel::clearAllFolderLocks,
+            onGestureSeekEnabledChange = viewModel::updateGestureSeekEnabled,
+            onGestureVolumeEnabledChange = viewModel::updateGestureVolumeEnabled,
+            onGestureBrightnessEnabledChange = viewModel::updateGestureBrightnessEnabled,
+            onGestureDoubleTapPlayPauseChange = viewModel::updateGestureDoubleTapPlayPause,
+            onGestureBrightnessZoneEndChange = viewModel::updateGestureBrightnessZoneEnd,
+            onGestureVolumeZoneStartChange = viewModel::updateGestureVolumeZoneStart
         )
     }
 
@@ -427,6 +486,14 @@ fun PlayerPlaybackScreen(
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    isPlaying = false
+                    exoPlayer.seekTo(0)
+                    exoPlayer.pause()
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -635,6 +702,14 @@ fun PlayerPlaybackScreen(
                         registerInteraction()
                     }
                 },
+                zoneConfig = GestureZoneConfig(
+                    brightnessZoneEnd = uiState.gestureBrightnessZoneEnd,
+                    volumeZoneStart = uiState.gestureVolumeZoneStart
+                ),
+                enableSeek = uiState.gestureSeekEnabled,
+                enableVolume = uiState.gestureVolumeEnabled,
+                enableBrightness = uiState.gestureBrightnessEnabled,
+                enableDoubleTapPlayPause = uiState.gestureDoubleTapPlayPause,
                 modifier = Modifier.fillMaxSize()
             ) {
                 playerView()
@@ -954,7 +1029,13 @@ private fun PlayerSettingsContent(
     onTogglePanelLock: () -> Unit,
     onToggleOrientationLock: () -> Unit,
     onToggleSubtitleAutoLoad: () -> Unit,
-    onClearFolderLocks: () -> Unit
+    onClearFolderLocks: () -> Unit,
+    onGestureSeekEnabledChange: (Boolean) -> Unit,
+    onGestureVolumeEnabledChange: (Boolean) -> Unit,
+    onGestureBrightnessEnabledChange: (Boolean) -> Unit,
+    onGestureDoubleTapPlayPauseChange: (Boolean) -> Unit,
+    onGestureBrightnessZoneEndChange: (Float) -> Unit,
+    onGestureVolumeZoneStartChange: (Float) -> Unit
 ) {
     SeekIntervalSetting(
         currentValue = uiState.seekIntervalSeconds,
@@ -1017,6 +1098,47 @@ private fun PlayerSettingsContent(
         title = "字幕自動読み込み",
         checked = uiState.subtitleAutoLoad,
         onChange = { onToggleSubtitleAutoLoad() }
+    )
+
+    Text(
+        text = "タッチ操作設定",
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(top = 16.dp)
+    )
+
+    SettingSwitchRow(
+        title = "シーク操作",
+        checked = uiState.gestureSeekEnabled,
+        onChange = onGestureSeekEnabledChange
+    )
+    SettingSwitchRow(
+        title = "音量調整",
+        checked = uiState.gestureVolumeEnabled,
+        onChange = onGestureVolumeEnabledChange
+    )
+    SettingSwitchRow(
+        title = "明るさ調整",
+        checked = uiState.gestureBrightnessEnabled,
+        onChange = onGestureBrightnessEnabledChange
+    )
+    SettingSwitchRow(
+        title = "ダブルタップで再生/一時停止",
+        checked = uiState.gestureDoubleTapPlayPause,
+        onChange = onGestureDoubleTapPlayPauseChange
+    )
+
+    Text("明るさ調整エリア: 左端〜${(uiState.gestureBrightnessZoneEnd * 100).toInt()}%")
+    Slider(
+        value = uiState.gestureBrightnessZoneEnd,
+        onValueChange = onGestureBrightnessZoneEndChange,
+        valueRange = 0.1f..0.5f
+    )
+
+    Text("音量調整エリア: ${(uiState.gestureVolumeZoneStart * 100).toInt()}%〜右端")
+    Slider(
+        value = uiState.gestureVolumeZoneStart,
+        onValueChange = onGestureVolumeZoneStartChange,
+        valueRange = 0.5f..0.9f
     )
 
     Button(

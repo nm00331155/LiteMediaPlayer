@@ -6,35 +6,46 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 object DatabaseMigrations {
 
     val MIGRATION_1_2: Migration = object : Migration(1, 2) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            migrateVideoFolders(database)
-            createComicBooksTable(database)
+        override fun migrate(db: SupportSQLiteDatabase) {
+            migrateVideoFolders(db)
+            createComicBooksTable(db)
         }
     }
 
     val MIGRATION_2_3: Migration = object : Migration(2, 3) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            migrateVideoFolders(database)
-            createComicBooksTable(database)
-            createLockConfigTable(database)
+        override fun migrate(db: SupportSQLiteDatabase) {
+            migrateVideoFolders(db)
+            createComicBooksTable(db)
+            createLockConfigTable(db)
         }
     }
 
     val MIGRATION_3_4: Migration = object : Migration(3, 4) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            migrateVideoFolders(database)
-            createComicBooksTable(database)
-            createLockConfigTable(database)
-            createNetworkServerTable(database)
+        override fun migrate(db: SupportSQLiteDatabase) {
+            migrateVideoFolders(db)
+            createComicBooksTable(db)
+            createLockConfigTable(db)
+            createNetworkServerTable(db)
         }
     }
 
     val MIGRATION_4_5: Migration = object : Migration(4, 5) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            migrateVideoFolders(database)
-            createComicBooksTable(database)
-            createLockConfigTable(database)
-            createNetworkServerTable(database)
+        override fun migrate(db: SupportSQLiteDatabase) {
+            migrateVideoFolders(db)
+            createComicBooksTable(db)
+            createLockConfigTable(db)
+            createNetworkServerTable(db)
+        }
+    }
+
+    val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            migrateVideoFolders(db)
+            createComicBooksTable(db)
+            createLockConfigTable(db)
+            createNetworkServerTable(db)
+            createComicFoldersTable(db)
+            ensureComicBookFolderIdColumn(db)
         }
     }
 
@@ -118,6 +129,7 @@ object DatabaseMigrations {
                 `lastReadPage` INTEGER NOT NULL,
                 `totalPages` INTEGER NOT NULL,
                 `readStatus` TEXT NOT NULL,
+                `folderId` INTEGER NOT NULL DEFAULT 0,
                 `createdAt` INTEGER NOT NULL
             )
             """.trimIndent()
@@ -125,6 +137,38 @@ object DatabaseMigrations {
         database.execSQL(
             "CREATE UNIQUE INDEX IF NOT EXISTS `index_comic_books_sourceUri` ON `comic_books` (`sourceUri`)"
         )
+        ensureComicBookFolderIdColumn(database)
+    }
+
+    private fun createComicFoldersTable(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `comic_folders` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `displayName` TEXT NOT NULL,
+                `treeUri` TEXT NOT NULL,
+                `coverUri` TEXT,
+                `bookCount` INTEGER NOT NULL DEFAULT 0,
+                `createdAt` INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        database.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_comic_folders_treeUri` ON `comic_folders` (`treeUri`)"
+        )
+    }
+
+    private fun ensureComicBookFolderIdColumn(database: SupportSQLiteDatabase) {
+        if (!hasTable(database, "comic_books")) {
+            return
+        }
+
+        val columns = getColumns(database, "comic_books")
+        if ("folderId" !in columns) {
+            database.execSQL(
+                "ALTER TABLE `comic_books` ADD COLUMN `folderId` INTEGER NOT NULL DEFAULT 0"
+            )
+        }
     }
 
     private fun createLockConfigTable(database: SupportSQLiteDatabase) {

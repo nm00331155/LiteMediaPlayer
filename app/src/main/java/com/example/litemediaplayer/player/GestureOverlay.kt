@@ -14,6 +14,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,11 +23,16 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToLong
 
-private enum class GestureMode {
+enum class GestureMode {
     Seek,
     Volume,
     Brightness
 }
+
+data class GestureZoneConfig(
+    val brightnessZoneEnd: Float = 0.3f,
+    val volumeZoneStart: Float = 0.7f
+)
 
 @Composable
 fun GestureOverlay(
@@ -36,6 +42,11 @@ fun GestureOverlay(
     onBrightnessDelta: (Float) -> Float,
     onTogglePlayPause: () -> Unit,
     onSingleTap: () -> Unit,
+    zoneConfig: GestureZoneConfig = GestureZoneConfig(),
+    enableSeek: Boolean = true,
+    enableVolume: Boolean = true,
+    enableBrightness: Boolean = true,
+    enableDoubleTapPlayPause: Boolean = true,
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
@@ -43,21 +54,39 @@ fun GestureOverlay(
     var gestureMode by remember { mutableStateOf<GestureMode?>(null) }
     var seekDistanceX by remember { mutableFloatStateOf(0f) }
 
+    val currentSeekCommit by rememberUpdatedState(onSeekCommit)
+    val currentVolumeDelta by rememberUpdatedState(onVolumeDelta)
+    val currentBrightnessDelta by rememberUpdatedState(onBrightnessDelta)
+    val currentTogglePlayPause by rememberUpdatedState(onTogglePlayPause)
+    val currentSingleTap by rememberUpdatedState(onSingleTap)
+    val currentSeekInterval by rememberUpdatedState(seekIntervalSeconds)
+    val currentZoneConfig by rememberUpdatedState(zoneConfig)
+    val currentEnableSeek by rememberUpdatedState(enableSeek)
+    val currentEnableVolume by rememberUpdatedState(enableVolume)
+    val currentEnableBrightness by rememberUpdatedState(enableBrightness)
+    val currentEnableDoubleTap by rememberUpdatedState(enableDoubleTapPlayPause)
+
     Box(
         modifier = modifier
-            .pointerInput(onTogglePlayPause, onSingleTap) {
+            .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { onSingleTap() },
-                    onDoubleTap = { onTogglePlayPause() }
+                    onTap = { currentSingleTap() },
+                    onDoubleTap = {
+                        if (currentEnableDoubleTap) {
+                            currentTogglePlayPause()
+                        }
+                    }
                 )
             }
-            .pointerInput(seekIntervalSeconds) {
+            .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { offset ->
+                        val xFraction = offset.x / size.width.toFloat()
                         gestureMode = when {
-                            offset.x <= size.width * 0.3f -> GestureMode.Brightness
-                            offset.x >= size.width * 0.7f -> GestureMode.Volume
-                            else -> GestureMode.Seek
+                            xFraction <= currentZoneConfig.brightnessZoneEnd && currentEnableBrightness -> GestureMode.Brightness
+                            xFraction >= currentZoneConfig.volumeZoneStart && currentEnableVolume -> GestureMode.Volume
+                            currentEnableSeek -> GestureMode.Seek
+                            else -> null
                         }
                         seekDistanceX = 0f
                     },
@@ -66,10 +95,10 @@ fun GestureOverlay(
                             val deltaMs = calculateSeekDeltaMs(
                                 distanceX = seekDistanceX,
                                 containerWidth = size.width.toFloat(),
-                                seekIntervalSeconds = seekIntervalSeconds
+                                seekIntervalSeconds = currentSeekInterval
                             )
                             if (deltaMs != 0L) {
-                                onSeekCommit(deltaMs)
+                                currentSeekCommit(deltaMs)
                             }
                         }
                         gestureMode = null
@@ -87,19 +116,21 @@ fun GestureOverlay(
                                 val deltaMs = calculateSeekDeltaMs(
                                     distanceX = seekDistanceX,
                                     containerWidth = size.width.toFloat(),
-                                    seekIntervalSeconds = seekIntervalSeconds
+                                    seekIntervalSeconds = currentSeekInterval
                                 )
                                 val sign = if (deltaMs >= 0) "+" else ""
                                 overlayText = "シーク ${sign}${deltaMs / 1000}s"
                             }
 
                             GestureMode.Volume -> {
-                                val currentVolumePercent = onVolumeDelta(-dragAmount.y / size.height)
+                                val currentVolumePercent =
+                                    currentVolumeDelta(-dragAmount.y / size.height)
                                 overlayText = "音量 ${currentVolumePercent}%"
                             }
 
                             GestureMode.Brightness -> {
-                                val currentBrightness = onBrightnessDelta(-dragAmount.y / size.height)
+                                val currentBrightness =
+                                    currentBrightnessDelta(-dragAmount.y / size.height)
                                 overlayText = "明るさ ${(currentBrightness * 100f).roundToLong()}%"
                             }
 
@@ -139,6 +170,6 @@ private fun calculateSeekDeltaMs(
     }
 
     val ratio = (distanceX / containerWidth).coerceIn(-1f, 1f)
-    val maxSeekMs = seekIntervalSeconds * 1000f * 4f
-    return (ratio * maxSeekMs).roundToLong()
+    val maxSeekMs = seekIntervalSeconds * 1000L
+    return (ratio * maxSeekMs.toFloat()).roundToLong()
 }

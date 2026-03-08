@@ -79,7 +79,13 @@ data class AppSettingsState(
     val maxConcurrentDownloads: Int = 2,
     val wifiOnlyDownload: Boolean = false,
     val downloadLocationUri: String? = null,
-    val autoAddToLibrary: Boolean = true
+    val autoAddToLibrary: Boolean = true,
+    val gestureSeekEnabled: Boolean = true,
+    val gestureVolumeEnabled: Boolean = true,
+    val gestureBrightnessEnabled: Boolean = true,
+    val gestureDoubleTapPlayPause: Boolean = true,
+    val gestureBrightnessZoneEnd: Float = 0.3f,
+    val gestureVolumeZoneStart: Float = 0.7f
 )
 
 @Singleton
@@ -126,7 +132,13 @@ class AppSettingsStore @Inject constructor(
                 maxConcurrentDownloads = (prefs[Keys.MAX_CONCURRENT_DOWNLOADS] ?: 2).coerceIn(1, 5),
                 wifiOnlyDownload = prefs[Keys.WIFI_ONLY_DOWNLOAD] ?: false,
                 downloadLocationUri = prefs[Keys.DOWNLOAD_LOCATION_URI],
-                autoAddToLibrary = prefs[Keys.AUTO_ADD_TO_LIBRARY] ?: true
+                autoAddToLibrary = prefs[Keys.AUTO_ADD_TO_LIBRARY] ?: true,
+                gestureSeekEnabled = prefs[Keys.GESTURE_SEEK_ENABLED] ?: true,
+                gestureVolumeEnabled = prefs[Keys.GESTURE_VOLUME_ENABLED] ?: true,
+                gestureBrightnessEnabled = prefs[Keys.GESTURE_BRIGHTNESS_ENABLED] ?: true,
+                gestureDoubleTapPlayPause = prefs[Keys.GESTURE_DOUBLE_TAP_PP] ?: true,
+                gestureBrightnessZoneEnd = prefs[Keys.GESTURE_BRIGHTNESS_ZONE_END] ?: 0.3f,
+                gestureVolumeZoneStart = prefs[Keys.GESTURE_VOLUME_ZONE_START] ?: 0.7f
             )
         }
 
@@ -265,6 +277,42 @@ class AppSettingsStore @Inject constructor(
             prefs[Keys.AUTO_ADD_TO_LIBRARY] = enabled
         }
     }
+
+    suspend fun updateGestureSeekEnabled(enabled: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.GESTURE_SEEK_ENABLED] = enabled
+        }
+    }
+
+    suspend fun updateGestureVolumeEnabled(enabled: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.GESTURE_VOLUME_ENABLED] = enabled
+        }
+    }
+
+    suspend fun updateGestureBrightnessEnabled(enabled: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.GESTURE_BRIGHTNESS_ENABLED] = enabled
+        }
+    }
+
+    suspend fun updateGestureDoubleTapPlayPause(enabled: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.GESTURE_DOUBLE_TAP_PP] = enabled
+        }
+    }
+
+    suspend fun updateGestureBrightnessZoneEnd(value: Float) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.GESTURE_BRIGHTNESS_ZONE_END] = value.coerceIn(0.1f, 0.5f)
+        }
+    }
+
+    suspend fun updateGestureVolumeZoneStart(value: Float) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.GESTURE_VOLUME_ZONE_START] = value.coerceIn(0.5f, 0.9f)
+        }
+    }
 }
 
 private object Keys {
@@ -291,6 +339,12 @@ private object Keys {
     val WIFI_ONLY_DOWNLOAD: Preferences.Key<Boolean> = booleanPreferencesKey("wifi_only_download")
     val DOWNLOAD_LOCATION_URI: Preferences.Key<String> = stringPreferencesKey("download_location_uri")
     val AUTO_ADD_TO_LIBRARY: Preferences.Key<Boolean> = booleanPreferencesKey("auto_add_to_library")
+    val GESTURE_SEEK_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("gesture_seek_enabled")
+    val GESTURE_VOLUME_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("gesture_volume_enabled")
+    val GESTURE_BRIGHTNESS_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("gesture_brightness_enabled")
+    val GESTURE_DOUBLE_TAP_PP: Preferences.Key<Boolean> = booleanPreferencesKey("gesture_double_tap_pp")
+    val GESTURE_BRIGHTNESS_ZONE_END: Preferences.Key<Float> = floatPreferencesKey("gesture_brightness_zone_end")
+    val GESTURE_VOLUME_ZONE_START: Preferences.Key<Float> = floatPreferencesKey("gesture_volume_zone_start")
 }
 
 private inline fun <reified T : Enum<T>> String.toEnumOrDefault(default: T): T {

@@ -25,7 +25,8 @@ object DatabaseModule {
                 DatabaseMigrations.MIGRATION_1_2,
                 DatabaseMigrations.MIGRATION_2_3,
                 DatabaseMigrations.MIGRATION_3_4,
-                DatabaseMigrations.MIGRATION_4_5
+                DatabaseMigrations.MIGRATION_4_5,
+                DatabaseMigrations.MIGRATION_5_6
             )
             .build()
     }
@@ -38,6 +39,11 @@ object DatabaseModule {
     @Provides
     fun provideComicBookDao(database: AppDatabase): ComicBookDao {
         return database.comicBookDao()
+    }
+
+    @Provides
+    fun provideComicFolderDao(database: AppDatabase): ComicFolderDao {
+        return database.comicFolderDao()
     }
 
     @Provides

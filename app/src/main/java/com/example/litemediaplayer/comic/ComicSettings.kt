@@ -34,6 +34,12 @@ enum class ReaderMode {
     SPREAD
 }
 
+enum class GridSize(val minDp: Int, val label: String) {
+    SMALL(90, "小"),
+    MEDIUM(120, "中"),
+    LARGE(170, "大")
+}
+
 enum class TrimSensitivity(val threshold: Float) {
     LOW(0.03f),
     MEDIUM(0.02f),
@@ -45,6 +51,7 @@ data class ComicReaderSettings(
     val animation: PageAnimation = PageAnimation.SLIDE,
     val animationSpeedMs: Int = 300,
     val mode: ReaderMode = ReaderMode.PAGE,
+    val gridSize: GridSize = GridSize.MEDIUM,
     val backgroundColorArgb: Int = 0xFF000000.toInt(),
     val pagePaddingDp: Int = 0,
     val blueLightFilterEnabled: Boolean = false,
@@ -79,6 +86,9 @@ class ComicSettings @Inject constructor(
                 mode = prefs[Keys.READER_MODE]
                     ?.toEnumOrDefault(ReaderMode.PAGE)
                     ?: ReaderMode.PAGE,
+                gridSize = prefs[Keys.GRID_SIZE]
+                    ?.toEnumOrDefault(GridSize.MEDIUM)
+                    ?: GridSize.MEDIUM,
                 backgroundColorArgb = prefs[Keys.BACKGROUND_COLOR_ARGB] ?: 0xFF000000.toInt(),
                 pagePaddingDp = prefs[Keys.PAGE_PADDING_DP] ?: 0,
                 blueLightFilterEnabled = prefs[Keys.BLUE_LIGHT_FILTER] ?: false,
@@ -168,6 +178,12 @@ class ComicSettings @Inject constructor(
     suspend fun updateMode(mode: ReaderMode) {
         context.comicDataStore.edit { prefs ->
             prefs[Keys.READER_MODE] = mode.name
+        }
+    }
+
+    suspend fun updateGridSize(size: GridSize) {
+        context.comicDataStore.edit { prefs ->
+            prefs[Keys.GRID_SIZE] = size.name
         }
     }
 
@@ -307,6 +323,7 @@ private object Keys {
     val PAGE_ANIMATION: Preferences.Key<String> = stringPreferencesKey("page_animation")
     val ANIMATION_SPEED_MS: Preferences.Key<Int> = intPreferencesKey("animation_speed_ms")
     val READER_MODE: Preferences.Key<String> = stringPreferencesKey("reader_mode")
+    val GRID_SIZE: Preferences.Key<String> = stringPreferencesKey("comic_grid_size")
     val BACKGROUND_COLOR_ARGB: Preferences.Key<Int> = intPreferencesKey("background_color_argb")
     val PAGE_PADDING_DP: Preferences.Key<Int> = intPreferencesKey("page_padding_dp")
     val BLUE_LIGHT_FILTER: Preferences.Key<Boolean> = booleanPreferencesKey("blue_light_filter")

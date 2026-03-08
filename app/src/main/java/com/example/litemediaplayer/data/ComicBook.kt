@@ -17,5 +17,6 @@ data class ComicBook(
     val lastReadPage: Int = 0,
     val totalPages: Int = 0,
     val readStatus: String = "UNREAD",
+    val folderId: Long = 0,
     val createdAt: Long = System.currentTimeMillis()
 )

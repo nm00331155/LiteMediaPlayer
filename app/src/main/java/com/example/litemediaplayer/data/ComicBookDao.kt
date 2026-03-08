@@ -17,6 +17,12 @@ interface ComicBookDao {
     @Query("SELECT * FROM comic_books WHERE sourceUri = :sourceUri LIMIT 1")
     suspend fun findBySourceUri(sourceUri: String): ComicBook?
 
+    @Query("SELECT * FROM comic_books WHERE folderId = :folderId ORDER BY title ASC")
+    fun observeByFolder(folderId: Long): Flow<List<ComicBook>>
+
+    @Query("SELECT * FROM comic_books WHERE folderId = :folderId ORDER BY title ASC")
+    suspend fun findByFolder(folderId: Long): List<ComicBook>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(book: ComicBook): Long
 
@@ -32,4 +38,7 @@ interface ComicBookDao {
 
     @Query("DELETE FROM comic_books WHERE id = :bookId")
     suspend fun deleteById(bookId: Long)
+
+    @Query("DELETE FROM comic_books WHERE folderId = :folderId")
+    suspend fun deleteByFolder(folderId: Long)
 }

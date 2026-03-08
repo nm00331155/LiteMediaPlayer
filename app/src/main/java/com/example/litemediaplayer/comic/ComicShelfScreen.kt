@@ -1,7 +1,10 @@
 package com.example.litemediaplayer.comic
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -42,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -54,11 +58,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.litemediaplayer.R
 import com.example.litemediaplayer.core.ui.PageSettingsSheet
+import android.os.SystemClock
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,9 +75,13 @@ fun ComicShelfScreen(
     viewModel: ComicReaderViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val fragmentActivity = context as? FragmentActivity
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showAddMenu by rememberSaveable { mutableStateOf(false) }
+    var titleTapCount by remember { mutableStateOf(0) }
+    var lastTitleTapMs by remember { mutableLongStateOf(0L) }
+    var showHiddenComics by remember { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -97,6 +108,7 @@ fun ComicShelfScreen(
             settings = uiState.settings,
             onDirectionChange = viewModel::updateReadingDirection,
             onModeChange = viewModel::updateReaderMode,
+            onGridSizeChange = viewModel::updateGridSize,
             onAnimationChange = viewModel::updatePageAnimation,
             onAnimationSpeedChange = viewModel::updateAnimationSpeed,
             onBlueLightChange = viewModel::updateBlueLightFilter,
@@ -119,6 +131,48 @@ fun ComicShelfScreen(
                 title = {
                     Text(
                         text = stringResource(id = R.string.tab_comic),
+                        modifier = Modifier.clickable {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastTitleTapMs > 2_000L) {
+                                titleTapCount = 1
+                            } else {
+                                titleTapCount += 1
+                            }
+                            lastTitleTapMs = now
+
+                            if (titleTapCount >= 5) {
+                                titleTapCount = 0
+                                val targetActivity = fragmentActivity
+                                if (targetActivity != null && !showHiddenComics) {
+                                    val executor = ContextCompat.getMainExecutor(targetActivity)
+                                    val prompt = BiometricPrompt(
+                                        targetActivity,
+                                        executor,
+                                        object : BiometricPrompt.AuthenticationCallback() {
+                                            override fun onAuthenticationSucceeded(
+                                                result: BiometricPrompt.AuthenticationResult
+                                            ) {
+                                                showHiddenComics = true
+                                                viewModel.toggleHiddenComicVisibility(true)
+                                            }
+                                        }
+                                    )
+                                    val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                                        .setTitle("認証")
+                                        .setSubtitle("非表示コミックを表示するには認証が必要です")
+                                        .setAllowedAuthenticators(
+                                            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                                                BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                                                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                                        )
+                                        .build()
+                                    prompt.authenticate(promptInfo)
+                                } else {
+                                    showHiddenComics = false
+                                    viewModel.toggleHiddenComicVisibility(false)
+                                }
+                            }
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -190,49 +244,113 @@ fun ComicShelfScreen(
                 )
             }
 
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 120.dp),
-                modifier = Modifier.fillMaxSize(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(uiState.books, key = { it.id }) { book ->
-                    Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenBook(book.id) }
-                    ) {
-                        AsyncImage(
-                            model = book.coverUri,
-                            contentDescription = null,
-                            contentScale = ContentScale.Fit,
+            val selectedFolderId = uiState.selectedFolderId
+            val displayBooks = remember(uiState.books, selectedFolderId) {
+                if (selectedFolderId != null) {
+                    uiState.books.filter { it.folderId == selectedFolderId }
+                } else {
+                    emptyList()
+                }
+            }
+            val gridMinSize = uiState.settings.gridSize.minDp.dp
+
+            if (selectedFolderId == null) {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = gridMinSize),
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(uiState.folders, key = { it.id }) { folder ->
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .aspectRatio(3f / 4f)
-                                .background(Color.Black)
-                        )
-                        Column(
-                            modifier = Modifier.padding(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                .clickable { viewModel.selectComicFolder(folder.id) }
                         ) {
-                            Text(
-                                text = book.title,
-                                style = MaterialTheme.typography.titleSmall,
-                                maxLines = 2
+                            AsyncImage(
+                                model = folder.coverUri,
+                                contentDescription = null,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(3f / 4f)
+                                    .background(Color.Black)
                             )
-                            Text(
-                                text = if (book.totalPages > 0) {
-                                    "${book.lastReadPage + 1} / ${book.totalPages} ページ"
-                                } else {
-                                    "未読"
-                                },
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
+                            Column(
+                                modifier = Modifier.padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = folder.displayName,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 2
+                                )
+                                Text(
+                                    text = "${folder.bookCount} 冊",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                BackHandler { viewModel.selectComicFolder(null) }
+
+                val selectedFolder = uiState.folders.firstOrNull { it.id == selectedFolderId }
+                Text(
+                    text = selectedFolder?.displayName ?: "書籍",
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = gridMinSize),
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(displayBooks, key = { it.id }) { book ->
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpenBook(book.id) }
+                        ) {
+                            AsyncImage(
+                                model = book.coverUri,
+                                contentDescription = null,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(3f / 4f)
+                                    .background(Color.Black)
                             )
+                            Column(
+                                modifier = Modifier.padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = book.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 2
+                                )
+                                Text(
+                                    text = if (book.totalPages > 0) {
+                                        "${book.lastReadPage + 1} / ${book.totalPages} ページ"
+                                    } else {
+                                        "未読"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
@@ -246,6 +364,7 @@ private fun ComicSettingsContent(
     settings: ComicReaderSettings,
     onDirectionChange: (ReadingDirection) -> Unit,
     onModeChange: (ReaderMode) -> Unit,
+    onGridSizeChange: (GridSize) -> Unit,
     onAnimationChange: (PageAnimation) -> Unit,
     onAnimationSpeedChange: (Int) -> Unit,
     onBlueLightChange: (Boolean) -> Unit,
@@ -280,6 +399,14 @@ private fun ComicSettingsContent(
             }
         },
         onSelect = onModeChange
+    )
+
+    Text("表示サイズ")
+    OptionChips(
+        options = GridSize.entries,
+        selected = settings.gridSize,
+        label = { it.label },
+        onSelect = onGridSizeChange
     )
 
     Text("アニメーション")

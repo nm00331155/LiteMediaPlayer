@@ -78,6 +78,12 @@ data class PlayerUiState(
     val subtitleAutoLoad: Boolean = true,
     val isPlayerPanelLocked: Boolean = false,
     val isPlayerOrientationLocked: Boolean = false,
+    val gestureSeekEnabled: Boolean = true,
+    val gestureVolumeEnabled: Boolean = true,
+    val gestureBrightnessEnabled: Boolean = true,
+    val gestureDoubleTapPlayPause: Boolean = true,
+    val gestureBrightnessZoneEnd: Float = 0.3f,
+    val gestureVolumeZoneStart: Float = 0.7f,
     val errorMessage: String? = null
 )
 
@@ -167,6 +173,12 @@ class PlayerViewModel @Inject constructor(
             subtitleAutoLoad = settings.subtitleAutoLoad,
             isPlayerPanelLocked = settings.playerPanelLocked,
             isPlayerOrientationLocked = settings.playerOrientationLocked,
+            gestureSeekEnabled = settings.gestureSeekEnabled,
+            gestureVolumeEnabled = settings.gestureVolumeEnabled,
+            gestureBrightnessEnabled = settings.gestureBrightnessEnabled,
+            gestureDoubleTapPlayPause = settings.gestureDoubleTapPlayPause,
+            gestureBrightnessZoneEnd = settings.gestureBrightnessZoneEnd,
+            gestureVolumeZoneStart = settings.gestureVolumeZoneStart,
             errorMessage = selection.errorMessage
         )
     }.stateIn(
@@ -223,14 +235,19 @@ class PlayerViewModel @Inject constructor(
                     ?.takeIf { it.isNotBlank() }
                     ?: "動画フォルダ"
 
-                folderDao.insert(
-                    VideoFolder(
-                        treeUri = folderUri.toString(),
-                        displayName = displayName
-                    )
+                val newFolder = VideoFolder(
+                    treeUri = folderUri.toString(),
+                    displayName = displayName
                 )
-                AppLogger.i("PlayerVM", "Added video folder: $displayName")
-                videoItemsCache.clear()
+                val newId = folderDao.insert(newFolder)
+                AppLogger.i("PlayerVM", "Added video folder: $displayName (id=$newId)")
+
+                val inserted = folderDao.findById(newId)
+                if (inserted != null) {
+                    scanFolderAsync(inserted)
+                }
+
+                selectedFolderId.value = newId
                 refresh()
             }.onFailure { error ->
                 AppLogger.e("PlayerVM", "Failed to add folder: $folderUri", error)
@@ -271,51 +288,41 @@ class PlayerViewModel @Inject constructor(
 
     fun deleteFolder(folder: VideoFolderUi) {
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                context.contentResolver.releasePersistableUriPermission(
-                    Uri.parse(folder.treeUri),
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }.onFailure { error ->
-                AppLogger.w(
-                    "PlayerVM",
-                    "releasePersistableUriPermission failed (ignored): ${error.message}"
-                )
-            }
+            try {
+                runCatching {
+                    context.contentResolver.releasePersistableUriPermission(
+                        Uri.parse(folder.treeUri),
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
 
-            runCatching {
-                lockConfigDao.findByTarget(LockTargetType.VIDEO_FOLDER.name, folder.id)
-                    ?.let { lockConfigDao.delete(it) }
-            }.onFailure { error ->
-                AppLogger.w("PlayerVM", "Failed to delete lock config: ${error.message}")
-            }
+                runCatching {
+                    lockConfigDao.findByTarget(LockTargetType.VIDEO_FOLDER.name, folder.id)
+                        ?.let { lockConfigDao.delete(it) }
+                }
 
-            runCatching {
                 folderDao.deleteById(folder.id)
-            }.onFailure { error ->
-                AppLogger.e("PlayerVM", "Failed to delete folder from DB", error)
-                errorMessage.value = "フォルダ削除に失敗しました"
-                return@launch
-            }
 
-            if (selectedFolderId.value == folder.id) {
-                selectedFolderId.value = null
+                videoItemsCache.remove(folder.treeUri)
+                deleteConfirmTarget.value = null
+
+                if (selectedFolderId.value == folder.id) {
+                    selectedFolderId.value = null
+                }
+
+                AppLogger.i("PlayerVM", "Removed video folder: ${folder.displayName}")
+                refresh()
+            } catch (error: Exception) {
+                AppLogger.e("PlayerVM", "deleteFolder failed", error)
+                errorMessage.value = "フォルダ削除に失敗しました: ${error.message}"
+                deleteConfirmTarget.value = null
             }
-            deleteConfirmTarget.value = null
-            videoItemsCache.remove(folder.treeUri)
-            AppLogger.i("PlayerVM", "Removed video folder: ${folder.displayName}")
-            refresh()
         }
     }
 
     fun toggleHiddenFolderVisibility(show: Boolean) {
         viewModelScope.launch {
             appSettingsStore.updateHiddenLockContentVisible(show)
-        }
-        errorMessage.value = if (show) {
-            "非表示フォルダを表示中"
-        } else {
-            "非表示フォルダを非表示にしました"
         }
     }
 
@@ -373,6 +380,42 @@ class PlayerViewModel @Inject constructor(
         val next = !uiState.value.isPlayerOrientationLocked
         viewModelScope.launch {
             appSettingsStore.updatePlayerOrientationLocked(next)
+        }
+    }
+
+    fun updateGestureSeekEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appSettingsStore.updateGestureSeekEnabled(enabled)
+        }
+    }
+
+    fun updateGestureVolumeEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appSettingsStore.updateGestureVolumeEnabled(enabled)
+        }
+    }
+
+    fun updateGestureBrightnessEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appSettingsStore.updateGestureBrightnessEnabled(enabled)
+        }
+    }
+
+    fun updateGestureDoubleTapPlayPause(enabled: Boolean) {
+        viewModelScope.launch {
+            appSettingsStore.updateGestureDoubleTapPlayPause(enabled)
+        }
+    }
+
+    fun updateGestureBrightnessZoneEnd(value: Float) {
+        viewModelScope.launch {
+            appSettingsStore.updateGestureBrightnessZoneEnd(value)
+        }
+    }
+
+    fun updateGestureVolumeZoneStart(value: Float) {
+        viewModelScope.launch {
+            appSettingsStore.updateGestureVolumeZoneStart(value)
         }
     }
 
