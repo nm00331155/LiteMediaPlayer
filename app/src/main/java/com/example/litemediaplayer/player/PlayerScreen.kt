@@ -203,31 +203,42 @@ fun PlayerScreen(
 
                             if (titleTapCount >= 5) {
                                 titleTapCount = 0
-                                val targetActivity = fragmentActivity
-                                if (targetActivity != null && !showHiddenFolders) {
-                                    val executor = ContextCompat.getMainExecutor(targetActivity)
-                                    val biometricPrompt = BiometricPrompt(
-                                        targetActivity,
-                                        executor,
-                                        object : BiometricPrompt.AuthenticationCallback() {
-                                            override fun onAuthenticationSucceeded(
-                                                result: BiometricPrompt.AuthenticationResult
-                                            ) {
-                                                showHiddenFolders = true
-                                                viewModel.toggleHiddenFolderVisibility(true)
-                                            }
+                                if (!uiState.fiveTapEnabled) {
+                                    return@clickable
+                                }
+
+                                if (!showHiddenFolders) {
+                                    if (uiState.fiveTapAuthRequired) {
+                                        val targetActivity = fragmentActivity
+                                        if (targetActivity != null) {
+                                            val executor = ContextCompat.getMainExecutor(targetActivity)
+                                            val biometricPrompt = BiometricPrompt(
+                                                targetActivity,
+                                                executor,
+                                                object : BiometricPrompt.AuthenticationCallback() {
+                                                    override fun onAuthenticationSucceeded(
+                                                        result: BiometricPrompt.AuthenticationResult
+                                                    ) {
+                                                        showHiddenFolders = true
+                                                        viewModel.toggleHiddenFolderVisibility(true)
+                                                    }
+                                                }
+                                            )
+                                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                                                .setTitle("認証")
+                                                .setSubtitle("隠しフォルダを表示するには認証してください")
+                                                .setAllowedAuthenticators(
+                                                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                                                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                                                )
+                                                .build()
+                                            biometricPrompt.authenticate(promptInfo)
                                         }
-                                    )
-                                    val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                                        .setTitle("認証")
-                                        .setSubtitle("非表示フォルダを表示するには認証が必要です")
-                                        .setAllowedAuthenticators(
-                                            BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                                                BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                                                BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                                        )
-                                        .build()
-                                    biometricPrompt.authenticate(promptInfo)
+                                    } else {
+                                        showHiddenFolders = true
+                                        viewModel.toggleHiddenFolderVisibility(true)
+                                    }
                                 } else {
                                     showHiddenFolders = false
                                     viewModel.toggleHiddenFolderVisibility(false)
@@ -491,8 +502,6 @@ fun PlayerPlaybackScreen(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     isPlaying = false
-                    exoPlayer.seekTo(0)
-                    exoPlayer.pause()
                 }
             }
 
@@ -689,7 +698,11 @@ fun PlayerPlaybackScreen(
                     registerInteraction()
                     volumeAccumulator = 0f
                     brightnessAccumulator = 0f
-                    if (exoPlayer.isPlaying) {
+                    if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                        exoPlayer.seekTo(0)
+                        exoPlayer.prepare()
+                        exoPlayer.play()
+                    } else if (exoPlayer.isPlaying) {
                         exoPlayer.pause()
                     } else {
                         exoPlayer.play()
@@ -782,7 +795,15 @@ fun PlayerPlaybackScreen(
                     IconButton(
                         onClick = {
                             registerInteraction()
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                            if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                                exoPlayer.seekTo(0)
+                                exoPlayer.prepare()
+                                exoPlayer.play()
+                            } else if (exoPlayer.isPlaying) {
+                                exoPlayer.pause()
+                            } else {
+                                exoPlayer.play()
+                            }
                         }
                     ) {
                         Icon(
@@ -817,11 +838,18 @@ fun PlayerPlaybackScreen(
 
                             previewJob?.cancel()
                             previewJob = previewScope.launch {
+                                delay(50)
                                 val bitmap = withContext(Dispatchers.IO) {
                                     runCatching {
                                         seekRetriever?.getFrameAtTime(
-                                            value.toLong() * 1_000,
+                                            value.toLong() * 1_000L,
                                             MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                                        )
+                                    }.onFailure { error ->
+                                        AppLogger.w(
+                                            "SeekPreview",
+                                            "Frame extraction failed at ${value.toLong()}ms",
+                                            error
                                         )
                                     }.getOrNull()
                                 }
@@ -838,7 +866,7 @@ fun PlayerPlaybackScreen(
                         valueRange = 0f..(durationMs.takeIf { it > 0L }?.toFloat() ?: 1f)
                     )
 
-                    if (isSliderDragging && seekPreviewBitmap != null && durationMs > 0L) {
+                    if (isSliderDragging && durationMs > 0L) {
                         val density = LocalDensity.current
                         val fraction = (sliderValue / durationMs.toFloat()).coerceIn(0f, 1f)
                         val thumbWidthDp = 160.dp
@@ -859,13 +887,25 @@ fun PlayerPlaybackScreen(
                                 .background(Color.Black, RoundedCornerShape(6.dp))
                                 .border(1.dp, Color.White, RoundedCornerShape(6.dp))
                         ) {
-                            seekPreviewBitmap?.let { bitmap ->
+                            val bitmap = seekPreviewBitmap
+                            if (bitmap != null) {
                                 Image(
                                     bitmap = bitmap.asImageBitmap(),
                                     contentDescription = "シークプレビュー",
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier.fillMaxSize()
                                 )
+                            } else {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "プレビュー取得中",
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
                             }
                             Text(
                                 text = formatDuration(seekPreviewPositionMs),

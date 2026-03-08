@@ -17,7 +17,8 @@ import kotlinx.coroutines.withContext
 enum class LockTargetType {
     APP_GLOBAL,
     VIDEO_FOLDER,
-    COMIC_SHELF
+    COMIC_SHELF,
+    COMIC_FOLDER
 }
 
 enum class LockAuthMethod {

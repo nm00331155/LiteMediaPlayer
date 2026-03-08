@@ -84,6 +84,8 @@ data class PlayerUiState(
     val gestureDoubleTapPlayPause: Boolean = true,
     val gestureBrightnessZoneEnd: Float = 0.3f,
     val gestureVolumeZoneStart: Float = 0.7f,
+    val fiveTapEnabled: Boolean = true,
+    val fiveTapAuthRequired: Boolean = true,
     val errorMessage: String? = null
 )
 
@@ -179,6 +181,8 @@ class PlayerViewModel @Inject constructor(
             gestureDoubleTapPlayPause = settings.gestureDoubleTapPlayPause,
             gestureBrightnessZoneEnd = settings.gestureBrightnessZoneEnd,
             gestureVolumeZoneStart = settings.gestureVolumeZoneStart,
+            fiveTapEnabled = settings.fiveTapEnabled,
+            fiveTapAuthRequired = settings.fiveTapAuthRequired,
             errorMessage = selection.errorMessage
         )
     }.stateIn(
@@ -242,13 +246,14 @@ class PlayerViewModel @Inject constructor(
                 val newId = folderDao.insert(newFolder)
                 AppLogger.i("PlayerVM", "Added video folder: $displayName (id=$newId)")
 
-                val inserted = folderDao.findById(newId)
-                if (inserted != null) {
-                    scanFolderAsync(inserted)
-                }
+                // 同期スキャン: フォルダ追加直後に一覧を更新してから選択を反映
+                resolveVideoItems(folderUri.toString())
 
                 selectedFolderId.value = newId
                 refresh()
+
+                // メタデータは非同期で後追い読み込み
+                loadMetadataForFolder(folderUri.toString())
             }.onFailure { error ->
                 AppLogger.e("PlayerVM", "Failed to add folder: $folderUri", error)
                 errorMessage.value = "フォルダ追加に失敗しました"
@@ -289,6 +294,12 @@ class PlayerViewModel @Inject constructor(
     fun deleteFolder(folder: VideoFolderUi) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // 先にUI選択をクリアして削除対象との競合を防ぐ
+                if (selectedFolderId.value == folder.id) {
+                    selectedFolderId.value = null
+                }
+                deleteConfirmTarget.value = null
+
                 runCatching {
                     context.contentResolver.releasePersistableUriPermission(
                         Uri.parse(folder.treeUri),
@@ -301,14 +312,8 @@ class PlayerViewModel @Inject constructor(
                         ?.let { lockConfigDao.delete(it) }
                 }
 
-                folderDao.deleteById(folder.id)
-
                 videoItemsCache.remove(folder.treeUri)
-                deleteConfirmTarget.value = null
-
-                if (selectedFolderId.value == folder.id) {
-                    selectedFolderId.value = null
-                }
+                folderDao.deleteById(folder.id)
 
                 AppLogger.i("PlayerVM", "Removed video folder: ${folder.displayName}")
                 refresh()

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -142,31 +143,42 @@ fun ComicShelfScreen(
 
                             if (titleTapCount >= 5) {
                                 titleTapCount = 0
-                                val targetActivity = fragmentActivity
-                                if (targetActivity != null && !showHiddenComics) {
-                                    val executor = ContextCompat.getMainExecutor(targetActivity)
-                                    val prompt = BiometricPrompt(
-                                        targetActivity,
-                                        executor,
-                                        object : BiometricPrompt.AuthenticationCallback() {
-                                            override fun onAuthenticationSucceeded(
-                                                result: BiometricPrompt.AuthenticationResult
-                                            ) {
-                                                showHiddenComics = true
-                                                viewModel.toggleHiddenComicVisibility(true)
-                                            }
+                                if (!uiState.fiveTapEnabled) {
+                                    return@clickable
+                                }
+
+                                if (!showHiddenComics) {
+                                    if (uiState.fiveTapAuthRequired) {
+                                        val targetActivity = fragmentActivity
+                                        if (targetActivity != null) {
+                                            val executor = ContextCompat.getMainExecutor(targetActivity)
+                                            val prompt = BiometricPrompt(
+                                                targetActivity,
+                                                executor,
+                                                object : BiometricPrompt.AuthenticationCallback() {
+                                                    override fun onAuthenticationSucceeded(
+                                                        result: BiometricPrompt.AuthenticationResult
+                                                    ) {
+                                                        showHiddenComics = true
+                                                        viewModel.toggleHiddenComicVisibility(true)
+                                                    }
+                                                }
+                                            )
+                                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                                                .setTitle("認証")
+                                                .setSubtitle("隠しコミックを表示するには認証してください")
+                                                .setAllowedAuthenticators(
+                                                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                                                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                                                )
+                                                .build()
+                                            prompt.authenticate(promptInfo)
                                         }
-                                    )
-                                    val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                                        .setTitle("認証")
-                                        .setSubtitle("非表示コミックを表示するには認証が必要です")
-                                        .setAllowedAuthenticators(
-                                            BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                                                BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                                                BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                                        )
-                                        .build()
-                                    prompt.authenticate(promptInfo)
+                                    } else {
+                                        showHiddenComics = true
+                                        viewModel.toggleHiddenComicVisibility(true)
+                                    }
                                 } else {
                                     showHiddenComics = false
                                     viewModel.toggleHiddenComicVisibility(false)
@@ -178,6 +190,11 @@ fun ComicShelfScreen(
                     )
                 },
                 actions = {
+                    if (uiState.selectedFolderId != null) {
+                        IconButton(onClick = { viewModel.selectComicFolder(null) }) {
+                            Icon(Icons.Default.Home, contentDescription = "本棚に戻る")
+                        }
+                    }
                     IconButton(onClick = onOpenFolderManager) {
                         Icon(Icons.Default.FolderOpen, contentDescription = "フォルダ管理")
                     }

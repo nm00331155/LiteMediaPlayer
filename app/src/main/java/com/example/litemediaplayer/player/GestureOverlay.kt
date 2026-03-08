@@ -165,11 +165,10 @@ private fun calculateSeekDeltaMs(
     containerWidth: Float,
     seekIntervalSeconds: Int
 ): Long {
-    if (containerWidth <= 0f) {
-        return 0L
-    }
+    if (containerWidth <= 0f) return 0L
 
-    val ratio = (distanceX / containerWidth).coerceIn(-1f, 1f)
+    val halfWidth = containerWidth / 2f
+    val ratio = (distanceX / halfWidth).coerceIn(-4f, 4f)
     val maxSeekMs = seekIntervalSeconds * 1000L
     return (ratio * maxSeekMs.toFloat()).roundToLong()
 }

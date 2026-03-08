@@ -85,7 +85,9 @@ data class AppSettingsState(
     val gestureBrightnessEnabled: Boolean = true,
     val gestureDoubleTapPlayPause: Boolean = true,
     val gestureBrightnessZoneEnd: Float = 0.3f,
-    val gestureVolumeZoneStart: Float = 0.7f
+    val gestureVolumeZoneStart: Float = 0.7f,
+    val fiveTapEnabled: Boolean = true,
+    val fiveTapAuthRequired: Boolean = true
 )
 
 @Singleton
@@ -138,7 +140,9 @@ class AppSettingsStore @Inject constructor(
                 gestureBrightnessEnabled = prefs[Keys.GESTURE_BRIGHTNESS_ENABLED] ?: true,
                 gestureDoubleTapPlayPause = prefs[Keys.GESTURE_DOUBLE_TAP_PP] ?: true,
                 gestureBrightnessZoneEnd = prefs[Keys.GESTURE_BRIGHTNESS_ZONE_END] ?: 0.3f,
-                gestureVolumeZoneStart = prefs[Keys.GESTURE_VOLUME_ZONE_START] ?: 0.7f
+                gestureVolumeZoneStart = prefs[Keys.GESTURE_VOLUME_ZONE_START] ?: 0.7f,
+                fiveTapEnabled = prefs[Keys.FIVE_TAP_ENABLED] ?: true,
+                fiveTapAuthRequired = prefs[Keys.FIVE_TAP_AUTH_REQUIRED] ?: true
             )
         }
 
@@ -313,6 +317,18 @@ class AppSettingsStore @Inject constructor(
             prefs[Keys.GESTURE_VOLUME_ZONE_START] = value.coerceIn(0.5f, 0.9f)
         }
     }
+
+    suspend fun updateFiveTapEnabled(enabled: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.FIVE_TAP_ENABLED] = enabled
+        }
+    }
+
+    suspend fun updateFiveTapAuthRequired(required: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.FIVE_TAP_AUTH_REQUIRED] = required
+        }
+    }
 }
 
 private object Keys {
@@ -345,6 +361,8 @@ private object Keys {
     val GESTURE_DOUBLE_TAP_PP: Preferences.Key<Boolean> = booleanPreferencesKey("gesture_double_tap_pp")
     val GESTURE_BRIGHTNESS_ZONE_END: Preferences.Key<Float> = floatPreferencesKey("gesture_brightness_zone_end")
     val GESTURE_VOLUME_ZONE_START: Preferences.Key<Float> = floatPreferencesKey("gesture_volume_zone_start")
+    val FIVE_TAP_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("five_tap_enabled")
+    val FIVE_TAP_AUTH_REQUIRED: Preferences.Key<Boolean> = booleanPreferencesKey("five_tap_auth_required")
 }
 
 private inline fun <reified T : Enum<T>> String.toEnumOrDefault(default: T): T {

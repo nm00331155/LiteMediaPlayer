@@ -16,6 +16,7 @@ import com.example.litemediaplayer.data.ComicBook
 import com.example.litemediaplayer.data.ComicBookDao
 import com.example.litemediaplayer.data.ComicFolder
 import com.example.litemediaplayer.data.ComicFolderDao
+import com.example.litemediaplayer.data.LockConfig
 import com.example.litemediaplayer.data.LockConfigDao
 import com.example.litemediaplayer.lock.LockManager
 import com.example.litemediaplayer.lock.LockTargetType
@@ -54,6 +55,8 @@ data class ComicReaderUiState(
     val pages: List<ComicPage> = emptyList(),
     val currentPage: Int = 0,
     val settings: ComicReaderSettings = ComicReaderSettings(),
+    val fiveTapEnabled: Boolean = true,
+    val fiveTapAuthRequired: Boolean = true,
     val errorMessage: String? = null
 )
 
@@ -106,6 +109,16 @@ class ComicReaderViewModel @Inject constructor(
         viewModelScope.launch {
             comicSettings.settingsFlow.collect { settings ->
                 _uiState.update { it.copy(settings = settings) }
+            }
+        }
+        viewModelScope.launch {
+            appSettingsStore.settingsFlow.collect { appSettings ->
+                _uiState.update {
+                    it.copy(
+                        fiveTapEnabled = appSettings.fiveTapEnabled,
+                        fiveTapAuthRequired = appSettings.fiveTapAuthRequired
+                    )
+                }
             }
         }
     }
@@ -408,11 +421,54 @@ class ComicReaderViewModel @Inject constructor(
 
     fun deleteComicFolder(folderId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                lockConfigDao.findByTarget(LockTargetType.COMIC_FOLDER.name, folderId)
+                    ?.let { lockConfigDao.delete(it) }
+            }
             comicBookDao.deleteByFolder(folderId)
             comicFolderDao.deleteById(folderId)
             if (_uiState.value.selectedFolderId == folderId) {
                 _uiState.update { it.copy(selectedFolderId = null) }
             }
+        }
+    }
+
+    fun toggleComicFolderLock(folderId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = lockConfigDao.findByTarget(
+                LockTargetType.COMIC_FOLDER.name,
+                folderId
+            )
+
+            if (existing != null) {
+                lockConfigDao.upsert(existing.copy(isEnabled = !existing.isEnabled))
+                return@launch
+            }
+
+            val global = lockConfigDao.findByTarget(
+                LockTargetType.APP_GLOBAL.name,
+                null
+            )
+
+            if (global == null) {
+                _uiState.update {
+                    it.copy(errorMessage = "先に設定タブでグローバルロックを設定してください")
+                }
+                return@launch
+            }
+
+            lockConfigDao.upsert(
+                LockConfig(
+                    targetType = LockTargetType.COMIC_FOLDER.name,
+                    targetId = folderId,
+                    authMethod = global.authMethod,
+                    pinHash = global.pinHash,
+                    patternHash = global.patternHash,
+                    autoLockMinutes = global.autoLockMinutes,
+                    isHidden = global.isHidden,
+                    isEnabled = true
+                )
+            )
         }
     }
 
