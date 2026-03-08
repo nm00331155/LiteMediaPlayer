@@ -31,6 +31,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.litemediaplayer.comic.ComicReaderScreen
 import com.example.litemediaplayer.R
+import com.example.litemediaplayer.comic.ComicFolderManagerScreen
 import com.example.litemediaplayer.comic.ComicShelfScreen
 import com.example.litemediaplayer.network.NetworkBrowserScreen
 import com.example.litemediaplayer.player.FolderManagerScreen
@@ -60,10 +61,12 @@ fun AppNavigation() {
             val navBackStackEntry by navController.currentBackStackEntryAsState()
             val currentDestination = navBackStackEntry?.destination
             val isReaderRoute = currentDestination?.route?.startsWith("comic_reader") == true
+            val isComicFolderManagerRoute =
+                currentDestination?.route?.startsWith("comic_folder_manager") == true
             val isPlaybackRoute = currentDestination?.route?.startsWith("player_playback") == true
             val isFolderRoute = currentDestination?.route?.startsWith("player_folders") == true
 
-            if (!isReaderRoute && !isPlaybackRoute && !isFolderRoute) {
+            if (!isReaderRoute && !isComicFolderManagerRoute && !isPlaybackRoute && !isFolderRoute) {
                 NavigationBar {
                     tabs.forEach { tab ->
                         val selected = currentDestination
@@ -103,7 +106,16 @@ fun AppNavigation() {
                 ComicShelfScreen(
                     onOpenBook = { bookId ->
                         navController.navigate("comic_reader/$bookId")
+                    },
+                    onOpenFolderManager = {
+                        navController.navigate("comic_folder_manager")
                     }
+                )
+            }
+
+            composable("comic_folder_manager") {
+                ComicFolderManagerScreen(
+                    onBack = { navController.popBackStack() }
                 )
             }
 

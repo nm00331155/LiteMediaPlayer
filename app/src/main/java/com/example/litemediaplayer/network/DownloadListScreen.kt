@@ -24,10 +24,11 @@ fun DownloadListScreen(
     downloadManager: NetworkDownloadManager = NetworkDownloadManager.shared
 ) {
     val downloads by downloadManager.downloads.collectAsStateWithLifecycle()
+    val uploads by downloadManager.uploads.collectAsStateWithLifecycle()
 
-    if (downloads.isEmpty()) {
+    if (downloads.isEmpty() && uploads.isEmpty()) {
         Text(
-            text = "ダウンロードはありません",
+            text = "転送タスクはありません",
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(12.dp)
         )
@@ -37,11 +38,17 @@ fun DownloadListScreen(
     val hasFinished = downloads.any { task ->
         task.status == NetworkDownloadManager.DownloadStatus.COMPLETED ||
             task.status == NetworkDownloadManager.DownloadStatus.FAILED
+    } || uploads.any { task ->
+        task.status == NetworkDownloadManager.DownloadStatus.COMPLETED ||
+            task.status == NetworkDownloadManager.DownloadStatus.FAILED
     }
 
     if (hasFinished) {
         Button(
-            onClick = { downloadManager.removeCompleted() },
+            onClick = {
+                downloadManager.removeCompleted()
+                downloadManager.removeCompletedUploads()
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp)
@@ -54,67 +61,139 @@ fun DownloadListScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
-        items(downloads, key = { task -> task.id }) { task ->
-            val progress = if (task.totalBytes > 0L) {
-                task.downloadedBytes.toFloat() / task.totalBytes.toFloat()
-            } else {
-                0f
+        if (downloads.isNotEmpty()) {
+            item {
+                Text(
+                    text = "ダウンロード",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
             }
 
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Column(
+            items(downloads, key = { task -> task.id }) { task ->
+                val progress = if (task.totalBytes > 0L) {
+                    task.downloadedBytes.toFloat() / task.totalBytes.toFloat()
+                } else {
+                    0f
+                }
+
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
                 ) {
-                    Text(text = task.fileName, style = MaterialTheme.typography.titleSmall)
-                    val ratioText = if (task.totalBytes > 0L) {
-                        val percent = (task.downloadedBytes * 100 / task.totalBytes).coerceIn(0, 100)
-                        " ($percent%)"
-                    } else {
-                        ""
-                    }
-                    Text(
-                        text = "${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}$ratioText",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(text = statusLabel(task.status), style = MaterialTheme.typography.bodySmall)
-                    LinearProgressIndicator(
-                        progress = { progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        when (task.status) {
-                            NetworkDownloadManager.DownloadStatus.DOWNLOADING -> {
-                                Button(onClick = { downloadManager.pause(task.id) }) {
-                                    Text(text = "一時停止")
-                                }
-                            }
-
-                            NetworkDownloadManager.DownloadStatus.PAUSED,
-                            NetworkDownloadManager.DownloadStatus.PENDING -> {
-                                Button(onClick = { downloadManager.resume(task.id) }) {
-                                    Text(text = "再開")
-                                }
-                            }
-
-                            else -> Unit
+                        Text(text = task.fileName, style = MaterialTheme.typography.titleSmall)
+                        val ratioText = if (task.totalBytes > 0L) {
+                            val percent = (task.downloadedBytes * 100 / task.totalBytes)
+                                .coerceIn(0, 100)
+                            " ($percent%)"
+                        } else {
+                            ""
                         }
+                        Text(
+                            text = "${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}$ratioText",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(text = statusLabel(task.status), style = MaterialTheme.typography.bodySmall)
+                        LinearProgressIndicator(
+                            progress = { progress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                        Button(onClick = { downloadManager.cancel(task.id) }) {
-                            Text(text = "キャンセル")
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            when (task.status) {
+                                NetworkDownloadManager.DownloadStatus.DOWNLOADING -> {
+                                    Button(onClick = { downloadManager.pause(task.id) }) {
+                                        Text(text = "一時停止")
+                                    }
+                                }
+
+                                NetworkDownloadManager.DownloadStatus.PAUSED,
+                                NetworkDownloadManager.DownloadStatus.PENDING -> {
+                                    Button(onClick = { downloadManager.resume(task.id) }) {
+                                        Text(text = "再開")
+                                    }
+                                }
+
+                                else -> Unit
+                            }
+
+                            Button(onClick = { downloadManager.cancel(task.id) }) {
+                                Text(text = "キャンセル")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (uploads.isNotEmpty()) {
+            item {
+                Text(
+                    text = "アップロード",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+            }
+
+            items(uploads, key = { task -> task.id }) { task ->
+                val progress = if (task.totalBytes > 0L) {
+                    task.uploadedBytes.toFloat() / task.totalBytes.toFloat()
+                } else {
+                    0f
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(text = task.fileName, style = MaterialTheme.typography.titleSmall)
+                        val ratioText = if (task.totalBytes > 0L) {
+                            val percent = (task.uploadedBytes * 100 / task.totalBytes)
+                                .coerceIn(0, 100)
+                            " ($percent%)"
+                        } else {
+                            ""
+                        }
+                        Text(
+                            text = "${formatBytes(task.uploadedBytes)} / ${formatBytes(task.totalBytes)}$ratioText",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(text = statusLabel(task.status), style = MaterialTheme.typography.bodySmall)
+                        LinearProgressIndicator(
+                            progress = { progress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Button(onClick = { downloadManager.cancelUpload(task.id) }) {
+                                Text(text = "キャンセル")
+                            }
                         }
                     }
                 }

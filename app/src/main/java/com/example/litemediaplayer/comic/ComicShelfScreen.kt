@@ -64,6 +64,7 @@ import com.example.litemediaplayer.core.ui.PageSettingsSheet
 @Composable
 fun ComicShelfScreen(
     onOpenBook: (Long) -> Unit = {},
+    onOpenFolderManager: () -> Unit = {},
     viewModel: ComicReaderViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -123,6 +124,9 @@ fun ComicShelfScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = onOpenFolderManager) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = "フォルダ管理")
+                    }
                     Box {
                         IconButton(onClick = { showAddMenu = true }) {
                             Icon(Icons.Default.Add, contentDescription = "追加")

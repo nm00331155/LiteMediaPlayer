@@ -2,6 +2,8 @@ package com.example.litemediaplayer.player
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
@@ -9,7 +11,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,7 +24,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -61,14 +67,19 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
@@ -93,7 +104,11 @@ import com.example.litemediaplayer.core.ui.PageSettingsSheet
 import com.example.litemediaplayer.settings.PlayerResizeMode
 import com.example.litemediaplayer.settings.PlayerRotation
 import androidx.compose.ui.text.input.KeyboardType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -105,6 +120,9 @@ fun PlayerScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
+    var titleTapCount by remember { mutableStateOf(0) }
+    var lastTitleTapMs by remember { mutableLongStateOf(0L) }
+    var showHiddenFolders by remember { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -158,7 +176,26 @@ fun PlayerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("プレイヤー") },
+                title = {
+                    Text(
+                        text = "プレイヤー",
+                        modifier = Modifier.clickable {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastTitleTapMs > 2_000L) {
+                                titleTapCount = 1
+                            } else {
+                                titleTapCount += 1
+                            }
+                            lastTitleTapMs = now
+
+                            if (titleTapCount >= 5) {
+                                titleTapCount = 0
+                                showHiddenFolders = !showHiddenFolders
+                                viewModel.toggleHiddenFolderVisibility(showHiddenFolders)
+                            }
+                        }
+                    )
+                },
                 actions = {
                     IconButton(onClick = onOpenFolderManager) {
                         Icon(Icons.Default.FolderOpen, contentDescription = "フォルダ管理")
@@ -327,10 +364,31 @@ fun PlayerPlaybackScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var hasStartedPlayback by remember { mutableStateOf(false) }
     var lastInteractionAtMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    var seekPreviewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var seekPreviewPositionMs by remember { mutableLongStateOf(0L) }
+    var sliderWidthPx by remember { mutableStateOf(0) }
+    var previewJob by remember { mutableStateOf<Job?>(null) }
+
+    val previewScope = rememberCoroutineScope()
+    val seekRetriever = remember(videoUri) {
+        runCatching {
+            MediaMetadataRetriever().apply {
+                setDataSource(context, Uri.parse(videoUri))
+            }
+        }.getOrNull()
+    }
 
     fun registerInteraction() {
         controlsVisible = true
         lastInteractionAtMs = SystemClock.elapsedRealtime()
+    }
+
+    DisposableEffect(seekRetriever) {
+        onDispose {
+            previewJob?.cancel()
+            runCatching { seekRetriever?.release() }
+            seekPreviewBitmap = null
+        }
     }
 
     PageSettingsSheet(
@@ -667,20 +725,85 @@ fun PlayerPlaybackScreen(
                     )
                 }
 
-                Slider(
-                    value = sliderValue,
-                    onValueChange = { value ->
-                        registerInteraction()
-                        isSliderDragging = true
-                        sliderValue = value
-                    },
-                    onValueChangeFinished = {
-                        registerInteraction()
-                        exoPlayer.seekTo(sliderValue.toLong())
-                        isSliderDragging = false
-                    },
-                    valueRange = 0f..(durationMs.takeIf { it > 0L }?.toFloat() ?: 1f)
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { coordinates ->
+                            sliderWidthPx = coordinates.size.width
+                        }
+                ) {
+                    Slider(
+                        value = sliderValue,
+                        onValueChange = { value ->
+                            registerInteraction()
+                            isSliderDragging = true
+                            sliderValue = value
+                            seekPreviewPositionMs = value.toLong()
+
+                            previewJob?.cancel()
+                            previewJob = previewScope.launch {
+                                val bitmap = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        seekRetriever?.getFrameAtTime(
+                                            value.toLong() * 1_000,
+                                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                                        )
+                                    }.getOrNull()
+                                }
+                                seekPreviewBitmap = bitmap
+                            }
+                        },
+                        onValueChangeFinished = {
+                            registerInteraction()
+                            exoPlayer.seekTo(sliderValue.toLong())
+                            isSliderDragging = false
+                            seekPreviewBitmap = null
+                            previewJob?.cancel()
+                        },
+                        valueRange = 0f..(durationMs.takeIf { it > 0L }?.toFloat() ?: 1f)
+                    )
+
+                    if (isSliderDragging && seekPreviewBitmap != null && durationMs > 0L) {
+                        val density = LocalDensity.current
+                        val fraction = (sliderValue / durationMs.toFloat()).coerceIn(0f, 1f)
+                        val thumbWidthDp = 160.dp
+                        val thumbHeightDp = 90.dp
+                        val thumbWidthPx = with(density) { thumbWidthDp.toPx() }
+                        val offsetXPx = (fraction * sliderWidthPx - thumbWidthPx / 2f)
+                            .coerceIn(0f, (sliderWidthPx - thumbWidthPx).coerceAtLeast(0f))
+
+                        Box(
+                            modifier = Modifier
+                                .offset {
+                                    IntOffset(
+                                        offsetXPx.toInt(),
+                                        -with(density) { (thumbHeightDp + 12.dp).toPx() }.toInt()
+                                    )
+                                }
+                                .size(thumbWidthDp, thumbHeightDp)
+                                .background(Color.Black, RoundedCornerShape(6.dp))
+                                .border(1.dp, Color.White, RoundedCornerShape(6.dp))
+                        ) {
+                            seekPreviewBitmap?.let { bitmap ->
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = "シークプレビュー",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Text(
+                                text = formatDuration(seekPreviewPositionMs),
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .background(Color.Black.copy(alpha = 0.7f))
+                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
 

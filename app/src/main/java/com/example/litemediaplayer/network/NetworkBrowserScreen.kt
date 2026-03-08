@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -31,12 +32,15 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -58,6 +62,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -143,7 +148,8 @@ data class NetworkBrowserUiState(
     val wifiOnlyDownload: Boolean = false,
     val downloadLocationUri: String? = null,
     val autoAddToLibrary: Boolean = true,
-    val downloadQueue: List<NetworkDownloadManager.DownloadTask> = emptyList()
+    val downloadQueue: List<NetworkDownloadManager.DownloadTask> = emptyList(),
+    val uploadQueue: List<NetworkDownloadManager.UploadTask> = emptyList()
 ) {
     val selectedCount: Int
         get() = selectedItems.size
@@ -185,8 +191,9 @@ class NetworkBrowserViewModel @Inject constructor(
         networkServerDao.observeAll(),
         appSettingsStore.settingsFlow,
         downloadManager.downloads,
+        downloadManager.uploads,
         internalState
-    ) { servers, settings, downloads, internal ->
+    ) { servers, settings, downloads, uploads, internal ->
         NetworkBrowserUiState(
             servers = servers,
             selectedServer = servers.firstOrNull { it.id == internal.selectedServerId },
@@ -201,7 +208,8 @@ class NetworkBrowserViewModel @Inject constructor(
             wifiOnlyDownload = settings.wifiOnlyDownload,
             downloadLocationUri = settings.downloadLocationUri,
             autoAddToLibrary = settings.autoAddToLibrary,
-            downloadQueue = downloads
+            downloadQueue = downloads,
+            uploadQueue = uploads
         )
     }.stateIn(
         scope = viewModelScope,
@@ -378,6 +386,45 @@ class NetworkBrowserViewModel @Inject constructor(
         postStatus("キューに追加: ${item.name}")
     }
 
+    fun uploadFile(localUri: Uri, fileName: String, fileSize: Long) {
+        val server = uiState.value.selectedServer ?: return
+        val remotePath = internalState.value.currentPath
+
+        downloadManager.enqueueUpload(
+            localUri = localUri,
+            server = server,
+            remotePath = remotePath,
+            fileName = fileName,
+            totalBytes = fileSize
+        )
+        postStatus("アップロード開始: $fileName")
+    }
+
+    fun uploadFolder(folderUri: Uri) {
+        val server = uiState.value.selectedServer ?: return
+        val remotePath = internalState.value.currentPath
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val folder = DocumentFile.fromTreeUri(context, folderUri) ?: return@launch
+            val files = collectLocalFilesRecursively(folder)
+            if (files.isEmpty()) {
+                postStatus("アップロード対象が見つかりません")
+                return@launch
+            }
+
+            files.forEach { file ->
+                downloadManager.enqueueUpload(
+                    localUri = file.uri,
+                    server = server,
+                    remotePath = remotePath,
+                    fileName = file.name ?: "unknown",
+                    totalBytes = file.length()
+                )
+            }
+            postStatus("${files.size} ファイルをアップロードキューに追加")
+        }
+    }
+
     fun downloadFolder(folder: NetworkFile) {
         if (!folder.isDirectory) {
             return
@@ -439,6 +486,25 @@ class NetworkBrowserViewModel @Inject constructor(
                     queue.add(file.path)
                 } else {
                     result.add(file)
+                }
+            }
+        }
+
+        return result
+    }
+
+    private fun collectLocalFilesRecursively(folder: DocumentFile): List<DocumentFile> {
+        val result = mutableListOf<DocumentFile>()
+        val queue = ArrayDeque<DocumentFile>()
+        queue.add(folder)
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            current.listFiles().forEach { child ->
+                if (child.isDirectory) {
+                    queue.add(child)
+                } else if (child.isFile) {
+                    result.add(child)
                 }
             }
         }
@@ -835,9 +901,11 @@ fun NetworkBrowserScreen(
     onOpenComic: (String) -> Unit = {},
     viewModel: NetworkBrowserViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showDownloadList by rememberSaveable { mutableStateOf(false) }
+    var showUploadMenu by rememberSaveable { mutableStateOf(false) }
     var editingServerId by rememberSaveable { mutableStateOf<Long?>(null) }
 
     var name by rememberSaveable { mutableStateOf("") }
@@ -853,6 +921,25 @@ fun NetworkBrowserScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         viewModel.updateDownloadLocation(uri)
+    }
+
+    val fileUploadPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val document = DocumentFile.fromSingleUri(context, uri)
+            val uploadName = document?.name ?: "upload"
+            val uploadSize = document?.length() ?: 0L
+            viewModel.uploadFile(uri, uploadName, uploadSize)
+        }
+    }
+
+    val folderUploadPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.uploadFolder(uri)
+        }
     }
 
     val input = NetworkServerInput(
@@ -921,6 +1008,30 @@ fun NetworkBrowserScreen(
                         IconButton(onClick = viewModel::refresh) {
                             Icon(Icons.Default.Refresh, contentDescription = "更新")
                         }
+                        Box {
+                            IconButton(onClick = { showUploadMenu = true }) {
+                                Icon(Icons.Default.Upload, contentDescription = "アップロード")
+                            }
+                            DropdownMenu(
+                                expanded = showUploadMenu,
+                                onDismissRequest = { showUploadMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("ファイルをアップロード") },
+                                    onClick = {
+                                        showUploadMenu = false
+                                        fileUploadPicker.launch(arrayOf("*/*"))
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("フォルダをアップロード") },
+                                    onClick = {
+                                        showUploadMenu = false
+                                        folderUploadPicker.launch(null)
+                                    }
+                                )
+                            }
+                        }
                         IconButton(onClick = { showSettings = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "ネットワーク設定")
                         }
@@ -935,21 +1046,28 @@ fun NetworkBrowserScreen(
             val pendingCount = uiState.downloadQueue.count {
                 it.status == NetworkDownloadManager.DownloadStatus.PENDING
             }
-            val totalActive = activeCount + pendingCount
+            val activeUploadCount = uiState.uploadQueue.count {
+                it.status == NetworkDownloadManager.DownloadStatus.DOWNLOADING
+            }
+            val pendingUploadCount = uiState.uploadQueue.count {
+                it.status == NetworkDownloadManager.DownloadStatus.PENDING
+            }
+            val totalActive = activeCount + pendingCount + activeUploadCount + pendingUploadCount
+            val runningCount = activeCount + activeUploadCount
 
-            if (uiState.downloadQueue.isNotEmpty()) {
+            if (uiState.downloadQueue.isNotEmpty() || uiState.uploadQueue.isNotEmpty()) {
                 FloatingActionButton(
                     onClick = { showDownloadList = true },
-                    containerColor = if (activeCount > 0) {
+                    containerColor = if (runningCount > 0) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.surfaceVariant
                     }
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.Download, contentDescription = "ダウンロード一覧")
+                        Icon(Icons.Default.Download, contentDescription = "転送一覧")
                         Text(
-                            text = if (activeCount > 0) "↓$activeCount" else "$totalActive",
+                            text = if (runningCount > 0) "$runningCount" else "$totalActive",
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
@@ -1116,7 +1234,7 @@ fun NetworkBrowserScreen(
     if (showDownloadList) {
         AlertDialog(
             onDismissRequest = { showDownloadList = false },
-            title = { Text("ダウンロード状況") },
+            title = { Text("転送状況") },
             text = {
                 Column(
                     modifier = Modifier

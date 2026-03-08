@@ -276,23 +276,46 @@ class PlayerViewModel @Inject constructor(
                     Uri.parse(folder.treeUri),
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
+            }.onFailure { error ->
+                AppLogger.w(
+                    "PlayerVM",
+                    "releasePersistableUriPermission failed (ignored): ${error.message}"
+                )
             }
 
             runCatching {
                 lockConfigDao.findByTarget(LockTargetType.VIDEO_FOLDER.name, folder.id)
                     ?.let { lockConfigDao.delete(it) }
-                folderDao.deleteById(folder.id)
-                if (selectedFolderId.value == folder.id) {
-                    selectedFolderId.value = null
-                }
-                deleteConfirmTarget.value = null
-                videoItemsCache.remove(folder.treeUri)
-                AppLogger.i("PlayerVM", "Removed video folder: ${folder.displayName}")
-                refresh()
             }.onFailure { error ->
-                AppLogger.e("PlayerVM", "Failed to remove folder: ${folder.displayName}", error)
-                errorMessage.value = "フォルダ登録の解除に失敗しました"
+                AppLogger.w("PlayerVM", "Failed to delete lock config: ${error.message}")
             }
+
+            runCatching {
+                folderDao.deleteById(folder.id)
+            }.onFailure { error ->
+                AppLogger.e("PlayerVM", "Failed to delete folder from DB", error)
+                errorMessage.value = "フォルダ削除に失敗しました"
+                return@launch
+            }
+
+            if (selectedFolderId.value == folder.id) {
+                selectedFolderId.value = null
+            }
+            deleteConfirmTarget.value = null
+            videoItemsCache.remove(folder.treeUri)
+            AppLogger.i("PlayerVM", "Removed video folder: ${folder.displayName}")
+            refresh()
+        }
+    }
+
+    fun toggleHiddenFolderVisibility(show: Boolean) {
+        viewModelScope.launch {
+            appSettingsStore.updateHiddenLockContentVisible(show)
+        }
+        errorMessage.value = if (show) {
+            "非表示フォルダを表示中"
+        } else {
+            "非表示フォルダを非表示にしました"
         }
     }
 

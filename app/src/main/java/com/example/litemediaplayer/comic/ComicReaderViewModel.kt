@@ -356,6 +356,17 @@ class ComicReaderViewModel @Inject constructor(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun deleteBook(bookId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            comicBookDao.deleteById(bookId)
+            if (_uiState.value.currentBookId == bookId) {
+                _uiState.update {
+                    it.copy(currentBookId = null, pages = emptyList(), currentPage = 0)
+                }
+            }
+        }
+    }
+
     fun updateReadingDirection(direction: ReadingDirection) {
         viewModelScope.launch {
             comicSettings.updateReadingDirection(direction)

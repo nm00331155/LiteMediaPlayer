@@ -29,4 +29,7 @@ interface ComicBookDao {
         totalPages: Int,
         readStatus: String
     )
+
+    @Query("DELETE FROM comic_books WHERE id = :bookId")
+    suspend fun deleteById(bookId: Long)
 }
