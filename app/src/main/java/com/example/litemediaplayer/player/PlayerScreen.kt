@@ -355,7 +355,11 @@ fun PlayerScreen(
                                     it.id == uiState.selectedFolderId
                                 }
 
-                                val shouldOpen = if (currentFolder != null && currentFolder.isLocked) {
+                                val shouldOpen = if (
+                                    currentFolder != null &&
+                                    currentFolder.isLocked &&
+                                    !uiState.showHiddenLocked
+                                ) {
                                     viewModel.requestFolderUnlock(currentFolder.id)
                                 } else {
                                     true
@@ -418,50 +422,66 @@ fun PlayerPlaybackScreen(
     var sliderWidthPx by remember { mutableStateOf(0) }
     var previewJob by remember { mutableStateOf<Job?>(null) }
     var seekPreviewRequestId by remember { mutableLongStateOf(0L) }
+    var seekRetriever by remember { mutableStateOf<MediaMetadataRetriever?>(null) }
+    var seekRetrieverFd by remember { mutableStateOf<ParcelFileDescriptor?>(null) }
+    var seekRetrieverInitialized by remember { mutableStateOf(false) }
 
     val previewScope = rememberCoroutineScope()
-    val seekRetrieverState = remember(videoUri) {
-        runCatching {
-            val uri = Uri.parse(videoUri)
-            val retriever = MediaMetadataRetriever()
-            val descriptor: ParcelFileDescriptor? = if (uri.scheme == "content") {
-                runCatching {
-                    context.contentResolver.openFileDescriptor(uri, "r")
-                }.getOrNull()
-            } else {
-                null
-            }
 
-            if (descriptor != null) {
-                retriever.setDataSource(descriptor.fileDescriptor)
-            } else {
-                retriever.setDataSource(context, uri)
-            }
+    LaunchedEffect(videoUri) {
+        if (seekRetrieverInitialized) {
+            return@LaunchedEffect
+        }
+        seekRetrieverInitialized = true
 
-            val testDuration = retriever.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_DURATION
-            )
-            if (testDuration == null) {
-                AppLogger.w("SeekPreview", "Retriever init succeeded but no duration metadata")
-            }
-            retriever to descriptor
-        }.onFailure { error ->
-            AppLogger.e("SeekPreview", "Failed to init MediaMetadataRetriever for $videoUri", error)
-        }.getOrNull()
+        val initializedRetriever = withContext(Dispatchers.IO) {
+            runCatching {
+                val uri = Uri.parse(videoUri)
+                val retriever = MediaMetadataRetriever()
+                val descriptor: ParcelFileDescriptor? = if (uri.scheme == "content") {
+                    runCatching {
+                        context.contentResolver.openFileDescriptor(uri, "r")
+                    }.getOrNull()
+                } else {
+                    null
+                }
+
+                if (descriptor != null) {
+                    retriever.setDataSource(descriptor.fileDescriptor)
+                } else {
+                    retriever.setDataSource(context, uri)
+                }
+
+                val testDuration = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_DURATION
+                )
+                AppLogger.d("SeekPreview", "Retriever ready. duration=$testDuration")
+                retriever to descriptor
+            }.onFailure { error ->
+                AppLogger.e("SeekPreview", "Failed to init retriever for $videoUri", error)
+            }.getOrNull()
+        }
+
+        if (initializedRetriever != null) {
+            seekRetriever = initializedRetriever.first
+            seekRetrieverFd = initializedRetriever.second
+        }
     }
-    val seekRetriever = seekRetrieverState?.first
 
     fun registerInteraction() {
         controlsVisible = true
         lastInteractionAtMs = SystemClock.elapsedRealtime()
     }
 
-    DisposableEffect(seekRetrieverState) {
+    DisposableEffect(Unit) {
         onDispose {
             AppLogger.d("SeekPreviewTrace", "Releasing seek preview resources")
             previewJob?.cancel()
-            runCatching { seekRetrieverState?.first?.release() }
-            runCatching { seekRetrieverState?.second?.close() }
+            runCatching { seekRetriever?.release() }
+            runCatching { seekRetrieverFd?.close() }
+            seekRetriever = null
+            seekRetrieverFd = null
+            seekRetrieverInitialized = false
             seekPreviewBitmap = null
         }
     }
@@ -862,10 +882,16 @@ fun PlayerPlaybackScreen(
                                 delay(150)
                                 val positionMs = value.toLong()
                                 val positionUs = positionMs * 1_000L
+                                val retriever = seekRetriever
+                                if (retriever == null) {
+                                    AppLogger.w(
+                                        "SeekPreviewTrace",
+                                        "request#$requestId retriever is null"
+                                    )
+                                    return@launch
+                                }
                                 val decodeStartMs = SystemClock.elapsedRealtime()
                                 val bitmap = withContext(Dispatchers.IO) {
-                                    val retriever = seekRetriever ?: return@withContext null
-
                                     val frame = runCatching {
                                         retriever.getFrameAtTime(
                                             positionUs,

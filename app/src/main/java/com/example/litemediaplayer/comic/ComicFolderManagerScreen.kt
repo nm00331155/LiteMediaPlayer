@@ -2,6 +2,8 @@ package com.example.litemediaplayer.comic
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +42,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.litemediaplayer.data.ComicFolder
@@ -161,6 +165,8 @@ private fun ComicFolderManagerItem(
     onToggleLock: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
+
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -187,7 +193,46 @@ private fun ComicFolderManagerItem(
                 )
             }
 
-            IconButton(onClick = onToggleLock) {
+            IconButton(
+                onClick = {
+                    if (isLockEnabled) {
+                        val targetActivity = context as? FragmentActivity
+                        if (targetActivity != null) {
+                            val executor = ContextCompat.getMainExecutor(targetActivity)
+                            val biometricPrompt = BiometricPrompt(
+                                targetActivity,
+                                executor,
+                                object : BiometricPrompt.AuthenticationCallback() {
+                                    override fun onAuthenticationSucceeded(
+                                        result: BiometricPrompt.AuthenticationResult
+                                    ) {
+                                        onToggleLock()
+                                    }
+
+                                    override fun onAuthenticationError(
+                                        errorCode: Int,
+                                        errString: CharSequence
+                                    ) {
+                                        // 認証キャンセル時は状態を変更しない
+                                    }
+                                }
+                            )
+                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                                .setTitle("ロック解除の認証")
+                                .setSubtitle("フォルダのロックを解除するには認証が必要です")
+                                .setAllowedAuthenticators(
+                                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                                )
+                                .build()
+                            biometricPrompt.authenticate(promptInfo)
+                        }
+                    } else {
+                        onToggleLock()
+                    }
+                }
+            ) {
                 Icon(
                     imageVector = if (isLockEnabled) Icons.Default.Lock else Icons.Default.LockOpen,
                     contentDescription = "ロック切替",
