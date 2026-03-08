@@ -122,7 +122,13 @@ class FolderManagerViewModel @Inject constructor(
             )
 
             if (existing != null) {
-                lockConfigDao.upsert(existing.copy(isEnabled = !existing.isEnabled))
+                val enable = !existing.isEnabled
+                lockConfigDao.upsert(
+                    existing.copy(
+                        isEnabled = enable,
+                        isHidden = if (enable) true else existing.isHidden
+                    )
+                )
                 return@launch
             }
 
@@ -144,7 +150,7 @@ class FolderManagerViewModel @Inject constructor(
                     pinHash = global.pinHash,
                     patternHash = global.patternHash,
                     autoLockMinutes = global.autoLockMinutes,
-                    isHidden = global.isHidden,
+                    isHidden = true,
                     isEnabled = true
                 )
             )

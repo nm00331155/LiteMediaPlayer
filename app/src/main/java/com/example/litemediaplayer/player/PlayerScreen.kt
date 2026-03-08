@@ -426,7 +426,9 @@ fun PlayerPlaybackScreen(
             val uri = Uri.parse(videoUri)
             val retriever = MediaMetadataRetriever()
             val descriptor: ParcelFileDescriptor? = if (uri.scheme == "content") {
-                context.contentResolver.openFileDescriptor(uri, "r")
+                runCatching {
+                    context.contentResolver.openFileDescriptor(uri, "r")
+                }.getOrNull()
             } else {
                 null
             }
@@ -436,7 +438,16 @@ fun PlayerPlaybackScreen(
             } else {
                 retriever.setDataSource(context, uri)
             }
+
+            val testDuration = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_DURATION
+            )
+            if (testDuration == null) {
+                AppLogger.w("SeekPreview", "Retriever init succeeded but no duration metadata")
+            }
             retriever to descriptor
+        }.onFailure { error ->
+            AppLogger.e("SeekPreview", "Failed to init MediaMetadataRetriever for $videoUri", error)
         }.getOrNull()
     }
     val seekRetriever = seekRetrieverState?.first
@@ -838,20 +849,54 @@ fun PlayerPlaybackScreen(
 
                             previewJob?.cancel()
                             previewJob = previewScope.launch {
-                                delay(50)
+                                delay(80)
+                                val positionMs = value.toLong()
+                                val positionUs = positionMs * 1_000L
                                 val bitmap = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        seekRetriever?.getFrameAtTime(
-                                            value.toLong() * 1_000L,
+                                    val retriever = seekRetriever ?: return@withContext null
+
+                                    var frame = runCatching {
+                                        retriever.getFrameAtTime(
+                                            positionUs,
                                             MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                                         )
-                                    }.onFailure { error ->
+                                    }.getOrNull()
+
+                                    if (frame == null) {
+                                        frame = runCatching {
+                                            retriever.getFrameAtTime(
+                                                positionUs,
+                                                MediaMetadataRetriever.OPTION_CLOSEST
+                                            )
+                                        }.getOrNull()
+                                    }
+
+                                    if (frame == null) {
+                                        frame = runCatching {
+                                            retriever.getFrameAtTime(
+                                                positionUs,
+                                                MediaMetadataRetriever.OPTION_PREVIOUS_SYNC
+                                            )
+                                        }.getOrNull()
+                                    }
+
+                                    if (frame == null && positionMs > 0) {
+                                        frame = runCatching {
+                                            retriever.getFrameAtTime(
+                                                0L,
+                                                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                                            )
+                                        }.getOrNull()
+                                    }
+
+                                    if (frame == null) {
                                         AppLogger.w(
                                             "SeekPreview",
-                                            "Frame extraction failed at ${value.toLong()}ms",
-                                            error
+                                            "All frame extraction methods failed at ${positionMs}ms"
                                         )
-                                    }.getOrNull()
+                                    }
+
+                                    frame
                                 }
                                 seekPreviewBitmap = bitmap
                             }

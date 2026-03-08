@@ -47,16 +47,30 @@ data class ComicPage(
     val sourceName: String
 )
 
+data class ComicFolderUi(
+    val folder: ComicFolder,
+    val isLockEnabled: Boolean = false,
+    val isHidden: Boolean = false
+) {
+    val id: Long get() = folder.id
+    val displayName: String get() = folder.displayName
+    val coverUri: String? get() = folder.coverUri
+    val bookCount: Int get() = folder.bookCount
+    val treeUri: String get() = folder.treeUri
+}
+
 data class ComicReaderUiState(
-    val folders: List<ComicFolder> = emptyList(),
+    val folders: List<ComicFolderUi> = emptyList(),
     val selectedFolderId: Long? = null,
     val books: List<ComicBook> = emptyList(),
     val currentBookId: Long? = null,
     val pages: List<ComicPage> = emptyList(),
     val currentPage: Int = 0,
+    val isLoadingBook: Boolean = false,
     val settings: ComicReaderSettings = ComicReaderSettings(),
     val fiveTapEnabled: Boolean = true,
     val fiveTapAuthRequired: Boolean = true,
+    val showHiddenLocked: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -94,15 +108,33 @@ class ComicReaderViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            comicFolderDao.observeAll().collect { folders ->
+            combine(
+                comicFolderDao.observeAll(),
+                lockConfigDao.getConfigsByType(LockTargetType.COMIC_FOLDER.name),
+                appSettingsStore.settingsFlow.map { it.hiddenLockContentVisible }
+            ) { folders, lockConfigs, showHidden ->
+                Triple(folders, lockConfigs, showHidden)
+            }.collect { (folders, lockConfigs, showHidden) ->
+                val folderUis = folders.map { folder ->
+                    val lockConfig = lockConfigs.firstOrNull { it.targetId == folder.id }
+                    ComicFolderUi(
+                        folder = folder,
+                        isLockEnabled = lockConfig?.isEnabled == true,
+                        isHidden = lockConfig?.isHidden == true
+                    )
+                }
                 _uiState.update { state ->
                     val selected = state.selectedFolderId
-                    val resolvedSelected = if (selected != null && folders.none { it.id == selected }) {
+                    val resolvedSelected = if (selected != null && folderUis.none { it.id == selected }) {
                         null
                     } else {
                         selected
                     }
-                    state.copy(folders = folders, selectedFolderId = resolvedSelected)
+                    state.copy(
+                        folders = folderUis,
+                        selectedFolderId = resolvedSelected,
+                        showHiddenLocked = showHidden
+                    )
                 }
             }
         }
@@ -280,6 +312,7 @@ class ComicReaderViewModel @Inject constructor(
 
     fun openBook(bookId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoadingBook = true) }
             try {
                 val book = comicBookDao.findById(bookId)
                 if (book == null) {
@@ -321,6 +354,8 @@ class ComicReaderViewModel @Inject constructor(
             } catch (e: Exception) {
                 AppLogger.e("ComicReader", "openBook failed", e)
                 _uiState.update { it.copy(errorMessage = "読み込みエラー: ${e.message}") }
+            } finally {
+                _uiState.update { it.copy(isLoadingBook = false) }
             }
         }
     }
@@ -416,6 +451,18 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     fun selectComicFolder(folderId: Long?) {
+        if (folderId != null) {
+            val folderUi = _uiState.value.folders.firstOrNull { it.id == folderId }
+            if (
+                folderUi != null &&
+                folderUi.isLockEnabled &&
+                folderUi.isHidden &&
+                !_uiState.value.showHiddenLocked
+            ) {
+                // ロック+非表示のフォルダにはアクセスさせない
+                return
+            }
+        }
         _uiState.update { it.copy(selectedFolderId = folderId) }
     }
 
@@ -441,7 +488,13 @@ class ComicReaderViewModel @Inject constructor(
             )
 
             if (existing != null) {
-                lockConfigDao.upsert(existing.copy(isEnabled = !existing.isEnabled))
+                val enable = !existing.isEnabled
+                lockConfigDao.upsert(
+                    existing.copy(
+                        isEnabled = enable,
+                        isHidden = if (enable) true else existing.isHidden
+                    )
+                )
                 return@launch
             }
 
@@ -465,7 +518,7 @@ class ComicReaderViewModel @Inject constructor(
                     pinHash = global.pinHash,
                     patternHash = global.patternHash,
                     autoLockMinutes = global.autoLockMinutes,
-                    isHidden = global.isHidden,
+                    isHidden = true,
                     isEnabled = true
                 )
             )

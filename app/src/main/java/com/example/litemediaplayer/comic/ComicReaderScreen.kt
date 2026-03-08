@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -102,6 +103,28 @@ fun ComicReaderScreen(
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
+    }
+
+    if (uiState.isLoadingBook) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(
+                    color = Color.White
+                )
+                Text(
+                    text = "読み込み中...",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
+            }
+        }
+        return
     }
 
     fun executeAction(action: TouchAction) {

@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -131,11 +132,12 @@ fun ComicFolderManagerScreen(
                 )
             }
 
-            items(uiState.folders, key = { it.id }) { folder ->
+            items(uiState.folders, key = { it.id }) { folderUi ->
                 ComicFolderManagerItem(
-                    folder = folder,
-                    onToggleLock = { viewModel.toggleComicFolderLock(folder.id) },
-                    onDelete = { deleteTarget = folder }
+                    folder = folderUi.folder,
+                    isLockEnabled = folderUi.isLockEnabled,
+                    onToggleLock = { viewModel.toggleComicFolderLock(folderUi.id) },
+                    onDelete = { deleteTarget = folderUi.folder }
                 )
             }
 
@@ -155,6 +157,7 @@ fun ComicFolderManagerScreen(
 @Composable
 private fun ComicFolderManagerItem(
     folder: ComicFolder,
+    isLockEnabled: Boolean,
     onToggleLock: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -186,9 +189,13 @@ private fun ComicFolderManagerItem(
 
             IconButton(onClick = onToggleLock) {
                 Icon(
-                    imageVector = Icons.Default.Lock,
+                    imageVector = if (isLockEnabled) Icons.Default.Lock else Icons.Default.LockOpen,
                     contentDescription = "ロック切替",
-                    tint = MaterialTheme.colorScheme.primary
+                    tint = if (isLockEnabled) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
 

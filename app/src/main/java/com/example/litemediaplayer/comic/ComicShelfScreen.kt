@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -272,13 +274,23 @@ fun ComicShelfScreen(
             val gridMinSize = uiState.settings.gridSize.minDp.dp
 
             if (selectedFolderId == null) {
+                val visibleFolders = remember(uiState.folders, uiState.showHiddenLocked) {
+                    uiState.folders.filter { folderUi ->
+                        if (folderUi.isLockEnabled && folderUi.isHidden) {
+                            uiState.showHiddenLocked
+                        } else {
+                            true
+                        }
+                    }
+                }
+
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = gridMinSize),
                     modifier = Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(uiState.folders, key = { it.id }) { folder ->
+                    items(visibleFolders, key = { it.id }) { folder ->
                         Card(
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(
@@ -301,6 +313,21 @@ fun ComicShelfScreen(
                                 modifier = Modifier.padding(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
+                                if (folder.isLockEnabled) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp),
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = " ロック中",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
                                 Text(
                                     text = folder.displayName,
                                     style = MaterialTheme.typography.titleSmall,
