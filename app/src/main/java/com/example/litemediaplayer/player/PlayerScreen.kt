@@ -129,7 +129,6 @@ fun PlayerScreen(
     var showSettings by remember { mutableStateOf(false) }
     var titleTapCount by remember { mutableStateOf(0) }
     var lastTitleTapMs by remember { mutableLongStateOf(0L) }
-    var showHiddenFolders by remember { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -207,7 +206,9 @@ fun PlayerScreen(
                                     return@clickable
                                 }
 
-                                if (!showHiddenFolders) {
+                                val currentlyShowing = uiState.showHiddenLocked
+
+                                if (!currentlyShowing) {
                                     if (uiState.fiveTapAuthRequired) {
                                         val targetActivity = fragmentActivity
                                         if (targetActivity != null) {
@@ -219,7 +220,6 @@ fun PlayerScreen(
                                                     override fun onAuthenticationSucceeded(
                                                         result: BiometricPrompt.AuthenticationResult
                                                     ) {
-                                                        showHiddenFolders = true
                                                         viewModel.toggleHiddenFolderVisibility(true)
                                                     }
                                                 }
@@ -236,11 +236,9 @@ fun PlayerScreen(
                                             biometricPrompt.authenticate(promptInfo)
                                         }
                                     } else {
-                                        showHiddenFolders = true
                                         viewModel.toggleHiddenFolderVisibility(true)
                                     }
                                 } else {
-                                    showHiddenFolders = false
                                     viewModel.toggleHiddenFolderVisibility(false)
                                 }
                             }
@@ -419,6 +417,7 @@ fun PlayerPlaybackScreen(
     var seekPreviewPositionMs by remember { mutableLongStateOf(0L) }
     var sliderWidthPx by remember { mutableStateOf(0) }
     var previewJob by remember { mutableStateOf<Job?>(null) }
+    var seekPreviewRequestId by remember { mutableLongStateOf(0L) }
 
     val previewScope = rememberCoroutineScope()
     val seekRetrieverState = remember(videoUri) {
@@ -459,6 +458,7 @@ fun PlayerPlaybackScreen(
 
     DisposableEffect(seekRetrieverState) {
         onDispose {
+            AppLogger.d("SeekPreviewTrace", "Releasing seek preview resources")
             previewJob?.cancel()
             runCatching { seekRetrieverState?.first?.release() }
             runCatching { seekRetrieverState?.second?.close() }
@@ -842,20 +842,31 @@ fun PlayerPlaybackScreen(
                     Slider(
                         value = sliderValue,
                         onValueChange = { value ->
+                            val wasDragging = isSliderDragging
                             registerInteraction()
                             isSliderDragging = true
                             sliderValue = value
                             seekPreviewPositionMs = value.toLong()
 
+                            if (!wasDragging) {
+                                AppLogger.d(
+                                    "SeekPreviewTrace",
+                                    "Seek drag started at ${seekPreviewPositionMs}ms / duration=${durationMs}ms"
+                                )
+                            }
+
                             previewJob?.cancel()
+                            val requestId = seekPreviewRequestId + 1L
+                            seekPreviewRequestId = requestId
                             previewJob = previewScope.launch {
-                                delay(80)
+                                delay(150)
                                 val positionMs = value.toLong()
                                 val positionUs = positionMs * 1_000L
+                                val decodeStartMs = SystemClock.elapsedRealtime()
                                 val bitmap = withContext(Dispatchers.IO) {
                                     val retriever = seekRetriever ?: return@withContext null
 
-                                    var frame = runCatching {
+                                    val frame = runCatching {
                                         retriever.getFrameAtTime(
                                             positionUs,
                                             MediaMetadataRetriever.OPTION_CLOSEST_SYNC
@@ -863,50 +874,49 @@ fun PlayerPlaybackScreen(
                                     }.getOrNull()
 
                                     if (frame == null) {
-                                        frame = runCatching {
-                                            retriever.getFrameAtTime(
-                                                positionUs,
-                                                MediaMetadataRetriever.OPTION_CLOSEST
-                                            )
-                                        }.getOrNull()
-                                    }
-
-                                    if (frame == null) {
-                                        frame = runCatching {
-                                            retriever.getFrameAtTime(
-                                                positionUs,
-                                                MediaMetadataRetriever.OPTION_PREVIOUS_SYNC
-                                            )
-                                        }.getOrNull()
-                                    }
-
-                                    if (frame == null && positionMs > 0) {
-                                        frame = runCatching {
-                                            retriever.getFrameAtTime(
-                                                0L,
-                                                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                                            )
-                                        }.getOrNull()
-                                    }
-
-                                    if (frame == null) {
                                         AppLogger.w(
                                             "SeekPreview",
-                                            "All frame extraction methods failed at ${positionMs}ms"
+                                            "Frame extraction failed at ${positionMs}ms"
                                         )
                                     }
 
                                     frame
                                 }
-                                seekPreviewBitmap = bitmap
+                                val decodeElapsedMs =
+                                    SystemClock.elapsedRealtime() - decodeStartMs
+
+                                if (bitmap != null) {
+                                    seekPreviewBitmap = bitmap
+                                    AppLogger.d(
+                                        "SeekPreviewTrace",
+                                        "request#$requestId updated pos=${positionMs}ms elapsed=${decodeElapsedMs}ms size=${bitmap.width}x${bitmap.height}"
+                                    )
+                                } else {
+                                    AppLogger.w(
+                                        "SeekPreviewTrace",
+                                        "request#$requestId null pos=${positionMs}ms elapsed=${decodeElapsedMs}ms"
+                                    )
+                                }
                             }
                         },
                         onValueChangeFinished = {
                             registerInteraction()
+                            val finalPositionMs = sliderValue.toLong()
                             exoPlayer.seekTo(sliderValue.toLong())
                             isSliderDragging = false
-                            seekPreviewBitmap = null
+                            AppLogger.d(
+                                "SeekPreviewTrace",
+                                "Seek drag finished at ${finalPositionMs}ms; clear in 300ms"
+                            )
                             previewJob?.cancel()
+                            previewJob = previewScope.launch {
+                                delay(300)
+                                seekPreviewBitmap = null
+                                AppLogger.d(
+                                    "SeekPreviewTrace",
+                                    "Seek preview bitmap cleared"
+                                )
+                            }
                         },
                         valueRange = 0f..(durationMs.takeIf { it > 0L }?.toFloat() ?: 1f)
                     )

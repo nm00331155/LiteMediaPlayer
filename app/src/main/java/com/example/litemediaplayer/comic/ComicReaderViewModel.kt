@@ -61,6 +61,7 @@ data class ComicFolderUi(
 
 data class ComicReaderUiState(
     val folders: List<ComicFolderUi> = emptyList(),
+    val allFolders: List<ComicFolderUi> = emptyList(),
     val selectedFolderId: Long? = null,
     val books: List<ComicBook> = emptyList(),
     val currentBookId: Long? = null,
@@ -123,15 +124,22 @@ class ComicReaderViewModel @Inject constructor(
                         isHidden = lockConfig?.isHidden == true
                     )
                 }
+                val visibleFolders = folderUis.filterNot {
+                    it.isLockEnabled && it.isHidden && !showHidden
+                }
                 _uiState.update { state ->
                     val selected = state.selectedFolderId
-                    val resolvedSelected = if (selected != null && folderUis.none { it.id == selected }) {
+                    val resolvedSelected = if (
+                        selected != null &&
+                        visibleFolders.none { it.id == selected }
+                    ) {
                         null
                     } else {
                         selected
                     }
                     state.copy(
-                        folders = folderUis,
+                        folders = visibleFolders,
+                        allFolders = folderUis,
                         selectedFolderId = resolvedSelected,
                         showHiddenLocked = showHidden
                     )
@@ -311,10 +319,12 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     fun openBook(bookId: Long) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch {
             _uiState.update { it.copy(isLoadingBook = true) }
             try {
-                val book = comicBookDao.findById(bookId)
+                val book = withContext(Dispatchers.IO) {
+                    comicBookDao.findById(bookId)
+                }
                 if (book == null) {
                     _uiState.update { it.copy(errorMessage = "書籍が見つかりません") }
                     return@launch
@@ -326,10 +336,12 @@ class ComicReaderViewModel @Inject constructor(
                 }
 
                 val settings = _uiState.value.settings
-                val pages = when (book.sourceType) {
-                    "FOLDER" -> loadFolderPages(book.sourceUri, settings)
-                    "ARCHIVE" -> loadArchivePages(book.sourceUri, settings)
-                    else -> emptyList()
+                val pages = withContext(Dispatchers.IO) {
+                    when (book.sourceType) {
+                        "FOLDER" -> loadFolderPages(book.sourceUri, settings)
+                        "ARCHIVE" -> loadArchivePages(book.sourceUri, settings)
+                        else -> emptyList()
+                    }
                 }
 
                 if (pages.isEmpty()) {

@@ -84,7 +84,6 @@ fun ComicShelfScreen(
     var showAddMenu by rememberSaveable { mutableStateOf(false) }
     var titleTapCount by remember { mutableStateOf(0) }
     var lastTitleTapMs by remember { mutableLongStateOf(0L) }
-    var showHiddenComics by remember { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -149,7 +148,9 @@ fun ComicShelfScreen(
                                     return@clickable
                                 }
 
-                                if (!showHiddenComics) {
+                                val currentlyShowing = uiState.showHiddenLocked
+
+                                if (!currentlyShowing) {
                                     if (uiState.fiveTapAuthRequired) {
                                         val targetActivity = fragmentActivity
                                         if (targetActivity != null) {
@@ -161,7 +162,6 @@ fun ComicShelfScreen(
                                                     override fun onAuthenticationSucceeded(
                                                         result: BiometricPrompt.AuthenticationResult
                                                     ) {
-                                                        showHiddenComics = true
                                                         viewModel.toggleHiddenComicVisibility(true)
                                                     }
                                                 }
@@ -178,11 +178,9 @@ fun ComicShelfScreen(
                                             prompt.authenticate(promptInfo)
                                         }
                                     } else {
-                                        showHiddenComics = true
                                         viewModel.toggleHiddenComicVisibility(true)
                                     }
                                 } else {
-                                    showHiddenComics = false
                                     viewModel.toggleHiddenComicVisibility(false)
                                 }
                             }
@@ -274,23 +272,13 @@ fun ComicShelfScreen(
             val gridMinSize = uiState.settings.gridSize.minDp.dp
 
             if (selectedFolderId == null) {
-                val visibleFolders = remember(uiState.folders, uiState.showHiddenLocked) {
-                    uiState.folders.filter { folderUi ->
-                        if (folderUi.isLockEnabled && folderUi.isHidden) {
-                            uiState.showHiddenLocked
-                        } else {
-                            true
-                        }
-                    }
-                }
-
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = gridMinSize),
                     modifier = Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(visibleFolders, key = { it.id }) { folder ->
+                    items(uiState.folders, key = { it.id }) { folder ->
                         Card(
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(

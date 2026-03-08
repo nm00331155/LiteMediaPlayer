@@ -86,6 +86,7 @@ data class PlayerUiState(
     val gestureVolumeZoneStart: Float = 0.7f,
     val fiveTapEnabled: Boolean = true,
     val fiveTapAuthRequired: Boolean = true,
+    val showHiddenLocked: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -183,6 +184,7 @@ class PlayerViewModel @Inject constructor(
             gestureVolumeZoneStart = settings.gestureVolumeZoneStart,
             fiveTapEnabled = settings.fiveTapEnabled,
             fiveTapAuthRequired = settings.fiveTapAuthRequired,
+            showHiddenLocked = settings.hiddenLockContentVisible,
             errorMessage = selection.errorMessage
         )
     }.stateIn(
@@ -438,16 +440,13 @@ class PlayerViewModel @Inject constructor(
         return folders.mapNotNull { folder ->
             val lockConfig = lockConfigs.firstOrNull { it.targetId == folder.id }
             val lockEnabled = lockConfig?.isEnabled == true
-            val isLocked = if (lockEnabled) {
-                lockManager.isLocked(LockTargetType.VIDEO_FOLDER, folder.id)
-            } else {
-                false
-            }
             val isHidden = lockConfig?.isHidden == true
 
-            if (isHidden && isLocked && !showHiddenLocked) {
+            if (lockEnabled && isHidden && !showHiddenLocked) {
                 return@mapNotNull null
             }
+
+            val isLocked = lockEnabled
 
             val cachedVideos = videoItemsCache[folder.treeUri]
                 ?.map { item ->

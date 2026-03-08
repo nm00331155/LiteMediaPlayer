@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -160,10 +161,14 @@ fun FolderManagerScreen(
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Icon(
-                                    imageVector = Icons.Default.Lock,
+                                    imageVector = if (folderState.isLocked) {
+                                        Icons.Default.Lock
+                                    } else {
+                                        Icons.Default.LockOpen
+                                    },
                                     contentDescription = null,
                                     tint = if (folderState.isLocked) {
-                                        MaterialTheme.colorScheme.primary
+                                        MaterialTheme.colorScheme.error
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     }

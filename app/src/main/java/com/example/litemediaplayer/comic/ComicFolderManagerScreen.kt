@@ -126,13 +126,13 @@ fun ComicFolderManagerScreen(
         ) {
             item {
                 Text(
-                    text = "登録済みフォルダ (${uiState.folders.size} 件)",
+                    text = "登録済みフォルダ (${uiState.allFolders.size} 件)",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(top = 12.dp)
                 )
             }
 
-            items(uiState.folders, key = { it.id }) { folderUi ->
+            items(uiState.allFolders, key = { it.id }) { folderUi ->
                 ComicFolderManagerItem(
                     folder = folderUi.folder,
                     isLockEnabled = folderUi.isLockEnabled,
@@ -141,7 +141,7 @@ fun ComicFolderManagerScreen(
                 )
             }
 
-            if (uiState.folders.isEmpty()) {
+            if (uiState.allFolders.isEmpty()) {
                 item {
                     Text(
                         text = "フォルダが登録されていません。右下の＋ボタンからフォルダを追加してください。",
