@@ -95,6 +95,13 @@ class ComicReaderViewModel @Inject constructor(
             appSettingsStore.updateHiddenLockContentVisible(false)
         }
 
+        _uiState.update { state ->
+            state.copy(
+                showHiddenLocked = false,
+                folders = state.allFolders.filterNot { it.isLockEnabled && it.isHidden }
+            )
+        }
+
         viewModelScope.launch {
             combine(
                 comicBookDao.observeAll(),
@@ -543,6 +550,33 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     fun toggleHiddenComicVisibility(show: Boolean) {
+        _uiState.update { state ->
+            if (!show) {
+                val filtered = state.allFolders.filterNot {
+                    it.isLockEnabled && it.isHidden
+                }
+                val resolvedSelected = if (
+                    state.selectedFolderId != null &&
+                    filtered.none { it.id == state.selectedFolderId }
+                ) {
+                    null
+                } else {
+                    state.selectedFolderId
+                }
+
+                state.copy(
+                    showHiddenLocked = false,
+                    folders = filtered,
+                    selectedFolderId = resolvedSelected
+                )
+            } else {
+                state.copy(
+                    showHiddenLocked = true,
+                    folders = state.allFolders
+                )
+            }
+        }
+
         viewModelScope.launch {
             appSettingsStore.updateHiddenLockContentVisible(show)
         }
