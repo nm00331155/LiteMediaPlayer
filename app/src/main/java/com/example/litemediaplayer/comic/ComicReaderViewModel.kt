@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val SUPPORTED_IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
+private val SUPPORTED_ARCHIVE_EXTENSIONS = setOf("zip", "cbz", "cbr", "rar")
 
 data class ComicPage(
     val index: Int,
@@ -93,17 +94,120 @@ class ComicReaderViewModel @Inject constructor(
 
     fun registerComicFolder(folderUri: Uri, resolver: ContentResolver) {
         viewModelScope.launch(Dispatchers.IO) {
-            val document = DocumentFile.fromTreeUri(context, folderUri)
-            if (document == null || !document.canRead()) {
+            try {
+                resolver.takePersistableUriPermission(
+                    folderUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                AppLogger.w("ComicReader", "takePersistableUriPermission failed", e)
+            }
+
+            val root = DocumentFile.fromTreeUri(context, folderUri)
+            if (root == null || !root.canRead()) {
                 _uiState.update { it.copy(errorMessage = "このフォルダは読み取れません") }
                 return@launch
             }
 
-            registerSource(
-                sourceUri = folderUri,
-                sourceType = "FOLDER",
-                resolver = resolver
-            )
+            val archives = mutableListOf<DocumentFile>()
+            val imageFolders = mutableListOf<DocumentFile>()
+            scanFolderRecursively(root, archives, imageFolders)
+
+            if (archives.isEmpty() && imageFolders.isEmpty()) {
+                _uiState.update { it.copy(errorMessage = "アーカイブや画像が見つかりません") }
+                return@launch
+            }
+
+            var registeredCount = 0
+
+            // アーカイブを個別登録
+            for (archive in archives) {
+                val uriString = archive.uri.toString()
+                if (comicBookDao.findBySourceUri(uriString) != null) {
+                    continue
+                }
+                val title = archive.name ?: "comic"
+                val coverUri = try {
+                    extractFirstImageFromArchive(archive.uri)
+                } catch (e: Exception) {
+                    AppLogger.w("ComicReader", "Cover extract failed: $title", e)
+                    null
+                }
+                comicBookDao.upsert(
+                    ComicBook(
+                        title = title,
+                        sourceUri = uriString,
+                        sourceType = "ARCHIVE",
+                        coverUri = coverUri,
+                        totalPages = 0
+                    )
+                )
+                registeredCount++
+            }
+
+            // 画像フォルダを登録
+            for (folder in imageFolders) {
+                val uriString = folder.uri.toString()
+                if (comicBookDao.findBySourceUri(uriString) != null) {
+                    continue
+                }
+                val title = folder.name ?: "comic"
+                val images = folder.listFiles()
+                    .filter { it.isFile && it.name.hasImageExtension() }
+                val coverUri = images
+                    .minByOrNull { it.name?.lowercase(Locale.getDefault()) ?: "" }
+                    ?.uri
+                    ?.toString()
+                comicBookDao.upsert(
+                    ComicBook(
+                        title = title,
+                        sourceUri = uriString,
+                        sourceType = "FOLDER",
+                        coverUri = coverUri,
+                        totalPages = images.size
+                    )
+                )
+                registeredCount++
+            }
+
+            if (registeredCount == 0) {
+                _uiState.update { it.copy(errorMessage = "新しい書籍はありませんでした（全て登録済み）") }
+            } else {
+                AppLogger.i("ComicReader", "Registered $registeredCount books from folder")
+            }
+        }
+    }
+
+    private fun scanFolderRecursively(
+        folder: DocumentFile,
+        archives: MutableList<DocumentFile>,
+        imageFolders: MutableList<DocumentFile>
+    ) {
+        val children = folder.listFiles()
+        var hasImages = false
+
+        for (child in children) {
+            if (child.isDirectory) {
+                scanFolderRecursively(child, archives, imageFolders)
+            } else if (child.isFile) {
+                val name = child.name ?: continue
+                val ext = name.substringAfterLast('.', "").lowercase(Locale.getDefault())
+                when {
+                    ext in SUPPORTED_ARCHIVE_EXTENSIONS -> archives.add(child)
+                    ext in SUPPORTED_IMAGE_EXTENSIONS -> hasImages = true
+                }
+            }
+        }
+
+        // このフォルダ自体に画像ファイルがあり、かつアーカイブが無い場合は画像フォルダとして登録
+        if (hasImages) {
+            val hasArchivesInThisFolder = children.any { child ->
+                child.isFile && child.name?.substringAfterLast('.', "")
+                    ?.lowercase(Locale.getDefault()) in SUPPORTED_ARCHIVE_EXTENSIONS
+            }
+            if (!hasArchivesInThisFolder) {
+                imageFolders.add(folder)
+            }
         }
     }
 

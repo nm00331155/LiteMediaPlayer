@@ -379,6 +379,13 @@ private fun ComicSettingsContent(
         modifier = Modifier.padding(top = 16.dp)
     )
 
+    Text(
+        text = "各ゾーンの操作割当は、コミック閲覧中にコントロールバーの指アイコンから設定できます",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+
     Text("タッチレイアウト")
     OptionChips(
         options = TouchZoneLayout.entries,
@@ -418,113 +425,6 @@ private fun ComicSettingsContent(
         current = settings.touchZone.volumeDownAction,
         onSelect = { onTouchZoneChange(settings.touchZone.copy(volumeDownAction = it)) }
     )
-
-    when (settings.touchZone.layout) {
-        TouchZoneLayout.THREE_COLUMN -> {
-            TouchZoneActionEditor(
-                zoneLabel = "左",
-                tapAction = settings.touchZone.leftTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(leftTap = it))
-                },
-                longPressAction = settings.touchZone.leftLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(leftLongPress = it))
-                }
-            )
-            TouchZoneActionEditor(
-                zoneLabel = "中央",
-                tapAction = settings.touchZone.centerTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(centerTap = it))
-                },
-                longPressAction = settings.touchZone.centerLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(centerLongPress = it))
-                }
-            )
-            TouchZoneActionEditor(
-                zoneLabel = "右",
-                tapAction = settings.touchZone.rightTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(rightTap = it))
-                },
-                longPressAction = settings.touchZone.rightLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(rightLongPress = it))
-                }
-            )
-        }
-
-        TouchZoneLayout.SIX_ZONE -> {
-            TouchZoneActionEditor(
-                zoneLabel = "上左",
-                tapAction = settings.touchZone.topLeftTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(topLeftTap = it))
-                },
-                longPressAction = settings.touchZone.topLeftLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(topLeftLongPress = it))
-                }
-            )
-            TouchZoneActionEditor(
-                zoneLabel = "上中央",
-                tapAction = settings.touchZone.topCenterTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(topCenterTap = it))
-                },
-                longPressAction = settings.touchZone.topCenterLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(topCenterLongPress = it))
-                }
-            )
-            TouchZoneActionEditor(
-                zoneLabel = "上右",
-                tapAction = settings.touchZone.topRightTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(topRightTap = it))
-                },
-                longPressAction = settings.touchZone.topRightLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(topRightLongPress = it))
-                }
-            )
-            TouchZoneActionEditor(
-                zoneLabel = "下左",
-                tapAction = settings.touchZone.bottomLeftTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(bottomLeftTap = it))
-                },
-                longPressAction = settings.touchZone.bottomLeftLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(bottomLeftLongPress = it))
-                }
-            )
-            TouchZoneActionEditor(
-                zoneLabel = "下中央",
-                tapAction = settings.touchZone.bottomCenterTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(bottomCenterTap = it))
-                },
-                longPressAction = settings.touchZone.bottomCenterLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(bottomCenterLongPress = it))
-                }
-            )
-            TouchZoneActionEditor(
-                zoneLabel = "下右",
-                tapAction = settings.touchZone.bottomRightTap,
-                onTapSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(bottomRightTap = it))
-                },
-                longPressAction = settings.touchZone.bottomRightLongPress,
-                onLongPressSelect = {
-                    onTouchZoneChange(settings.touchZone.copy(bottomRightLongPress = it))
-                }
-            )
-        }
-    }
 }
 
 @Composable
