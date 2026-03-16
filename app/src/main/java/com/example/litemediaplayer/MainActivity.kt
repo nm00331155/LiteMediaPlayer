@@ -9,7 +9,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import com.example.litemediaplayer.data.LockConfigDao
 import com.example.litemediaplayer.navigation.AppNavigation
+import com.example.litemediaplayer.lock.LockAuthMethod
 import com.example.litemediaplayer.settings.AppSettingsStore
 import com.example.litemediaplayer.settings.AppSettingsState
 import com.example.litemediaplayer.settings.LocaleHelper
@@ -28,13 +30,31 @@ class MainActivity : AppCompatActivity() {
     @Inject
     lateinit var appSettingsStore: AppSettingsStore
 
+    @Inject
+    lateinit var lockConfigDao: LockConfigDao
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (savedInstanceState == null) {
-            runCatching {
-                val settings = runBlocking { appSettingsStore.settingsFlow.first() }
-                LocaleHelper.applyLanguageIfNeeded(this, settings.language)
+        runCatching {
+            runBlocking {
+                val settings = appSettingsStore.settingsFlow.first()
+
+                if (settings.lockAuthMethod == LockAuthMethod.FACE.name) {
+                    appSettingsStore.updateLockAuthMethod(LockAuthMethod.BIOMETRIC.name)
+                }
+
+                lockConfigDao.findAll()
+                    .filter { it.authMethod == LockAuthMethod.FACE.name }
+                    .forEach { config ->
+                        lockConfigDao.upsert(
+                            config.copy(authMethod = LockAuthMethod.BIOMETRIC.name)
+                        )
+                    }
+
+                if (savedInstanceState == null) {
+                    LocaleHelper.applyLanguageIfNeeded(this@MainActivity, settings.language)
+                }
             }
         }
 
@@ -63,7 +83,7 @@ private fun MainRoot(appSettingsStore: AppSettingsStore) {
 
     LiteMediaTheme(darkTheme = darkTheme) {
         Surface(modifier = Modifier.fillMaxSize()) {
-            AppNavigation()
+            AppNavigation(appSettingsStore = appSettingsStore)
         }
     }
 }

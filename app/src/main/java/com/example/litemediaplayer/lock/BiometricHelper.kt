@@ -11,10 +11,12 @@ import javax.inject.Singleton
 @Singleton
 class BiometricHelper @Inject constructor() {
 
-    fun canUseBiometric(context: Context): Boolean {
+    fun canUseBiometric(
+        context: Context,
+        authMethod: LockAuthMethod = LockAuthMethod.BIOMETRIC
+    ): Boolean {
         val result = BiometricManager.from(context).canAuthenticate(
-            BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            allowedAuthenticators(authMethod)
         )
         return result == BiometricManager.BIOMETRIC_SUCCESS
     }
@@ -23,6 +25,7 @@ class BiometricHelper @Inject constructor() {
         activity: FragmentActivity,
         title: String,
         subtitle: String,
+        authMethod: LockAuthMethod = LockAuthMethod.BIOMETRIC,
         onResult: (Boolean) -> Unit
     ) {
         val executor = ContextCompat.getMainExecutor(activity)
@@ -41,15 +44,35 @@ class BiometricHelper @Inject constructor() {
         }
 
         val prompt = BiometricPrompt(activity, executor, callback)
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+        val allowedAuthenticators = allowedAuthenticators(authMethod)
+        val promptInfoBuilder = BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
             .setSubtitle(subtitle)
-            .setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
-            )
-            .build()
+            .setAllowedAuthenticators(allowedAuthenticators)
+
+        if (requiresNegativeButton(allowedAuthenticators)) {
+            promptInfoBuilder.setNegativeButtonText("キャンセル")
+        }
+
+        val promptInfo = promptInfoBuilder.build()
 
         prompt.authenticate(promptInfo)
+    }
+
+    private fun requiresNegativeButton(allowedAuthenticators: Int): Boolean {
+        return allowedAuthenticators and BiometricManager.Authenticators.DEVICE_CREDENTIAL == 0
+    }
+
+    private fun allowedAuthenticators(authMethod: LockAuthMethod): Int {
+        return when (authMethod) {
+            LockAuthMethod.BIOMETRIC,
+            LockAuthMethod.FACE -> {
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.BIOMETRIC_WEAK
+            }
+
+            LockAuthMethod.PIN,
+            LockAuthMethod.PATTERN -> BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        }
     }
 }

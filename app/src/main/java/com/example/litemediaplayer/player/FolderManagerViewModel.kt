@@ -3,13 +3,16 @@ package com.example.litemediaplayer.player
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.data.LockConfig
 import com.example.litemediaplayer.data.LockConfigDao
 import com.example.litemediaplayer.data.VideoFolder
 import com.example.litemediaplayer.data.VideoFolderDao
+import com.example.litemediaplayer.lock.LockAuthMethod
 import com.example.litemediaplayer.lock.LockTargetType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -42,19 +46,30 @@ class FolderManagerViewModel @Inject constructor(
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
+    private val _videoCounts = MutableStateFlow<Map<Long, Int>>(emptyMap())
+
     val folders: StateFlow<List<FolderState>> = combine(
         folderDao.observeAll(),
-        lockConfigDao.getConfigsByType(LockTargetType.VIDEO_FOLDER.name)
-    ) { folders, locks ->
+        lockConfigDao.getConfigsByType(LockTargetType.VIDEO_FOLDER.name),
+        _videoCounts
+    ) { folders, locks, videoCounts ->
         folders.map { folder ->
             val lockConfig = locks.find { it.targetId == folder.id }
             FolderState(
                 folder = folder,
                 isLocked = lockConfig?.isEnabled == true,
-                videoCount = countVideosInFolder(folder)
+                videoCount = videoCounts[folder.id] ?: -1
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    init {
+        viewModelScope.launch {
+            folderDao.observeAll().collectLatest { folders ->
+                refreshVideoCounts(folders)
+            }
+        }
+    }
 
     fun addFolder(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -126,19 +141,9 @@ class FolderManagerViewModel @Inject constructor(
                 lockConfigDao.upsert(
                     existing.copy(
                         isEnabled = enable,
-                        isHidden = if (enable) true else existing.isHidden
+                        isHidden = true
                     )
                 )
-                return@launch
-            }
-
-            val global = lockConfigDao.findByTarget(
-                LockTargetType.APP_GLOBAL.name,
-                null
-            )
-
-            if (global == null) {
-                _message.value = "先に設定タブでグローバルロックを設定してください"
                 return@launch
             }
 
@@ -146,19 +151,15 @@ class FolderManagerViewModel @Inject constructor(
                 LockConfig(
                     targetType = LockTargetType.VIDEO_FOLDER.name,
                     targetId = folder.id,
-                    authMethod = global.authMethod,
-                    pinHash = global.pinHash,
-                    patternHash = global.patternHash,
-                    autoLockMinutes = global.autoLockMinutes,
+                    authMethod = LockAuthMethod.PIN.name,
+                    pinHash = null,
+                    patternHash = null,
+                    autoLockMinutes = 5,
                     isHidden = true,
                     isEnabled = true
                 )
             )
         }
-    }
-
-    fun openLockSettings() {
-        _message.update { "ロック詳細は設定タブで変更してください" }
     }
 
     fun consumeMessage() {
@@ -171,6 +172,31 @@ class FolderManagerViewModel @Inject constructor(
             file.isFile && file.name
                 ?.substringAfterLast('.', "")
                 ?.lowercase() in SUPPORTED_VIDEO_EXTENSIONS
+        }
+    }
+
+    private fun refreshVideoCounts(folders: List<VideoFolder>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (folders.isEmpty()) {
+                _videoCounts.value = emptyMap()
+                return@launch
+            }
+
+            _videoCounts.update { existing ->
+                existing.filterKeys { key -> folders.any { it.id == key } }
+            }
+
+            val start = SystemClock.elapsedRealtime()
+            folders.forEach { folder ->
+                _videoCounts.update { current ->
+                    current + (folder.id to countVideosInFolder(folder))
+                }
+            }
+
+            AppLogger.d(
+                "FolderManager",
+                "Folder counts refreshed in ${SystemClock.elapsedRealtime() - start}ms for ${folders.size} folders"
+            )
         }
     }
 }

@@ -11,6 +11,9 @@ interface LockConfigDao {
     @Query("SELECT * FROM lock_configs")
     fun observeAll(): Flow<List<LockConfig>>
 
+  @Query("SELECT * FROM lock_configs")
+  suspend fun findAll(): List<LockConfig>
+
     @Query(
         """
         SELECT * FROM lock_configs

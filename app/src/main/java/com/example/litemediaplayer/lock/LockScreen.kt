@@ -8,22 +8,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.launch
 
 @Composable
@@ -40,8 +38,6 @@ fun LockScreen(
     val activity = context as? FragmentActivity
     val lockConfig = viewModel.getLockConfig(targetType, targetId)
 
-    var pinInput by remember { mutableStateOf("") }
-    var patternInput by remember { mutableStateOf("") }
     var localError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -65,81 +61,68 @@ fun LockScreen(
             return@Column
         }
 
-        when (LockAuthMethod.valueOf(lockConfig.authMethod)) {
+        val authMethod = runCatching {
+            LockAuthMethod.fromStoredValue(lockConfig.authMethod)
+        }.getOrElse { LockAuthMethod.PIN }
+
+        fun launchDeviceAuth(subtitle: String, errorMessage: String) {
+            if (activity == null || !biometricHelper.canUseBiometric(context, authMethod)) {
+                localError = "端末の認証が利用できません"
+                return
+            }
+
+            biometricHelper.authenticate(
+                activity = activity,
+                title = "ロック解除",
+                subtitle = subtitle,
+                authMethod = authMethod
+            ) { success ->
+                if (success) {
+                    scope.launch {
+                        viewModel.unlockWithBiometric(targetType, targetId)
+                        onUnlocked()
+                    }
+                } else {
+                    localError = errorMessage
+                }
+            }
+        }
+
+        when (authMethod) {
             LockAuthMethod.PIN -> {
-                OutlinedTextField(
-                    value = pinInput,
-                    onValueChange = { pinInput = it.filter(Char::isDigit).take(8) },
-                    label = { Text(text = "PIN") },
-                    visualTransformation = PasswordVisualTransformation(),
+                Text(
+                    text = "端末に設定されている PIN / パスワード / パターンで解除します",
+                    style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 Button(
-                    onClick = {
-                        scope.launch {
-                            val ok = viewModel.unlockWithPin(targetType, targetId, pinInput)
-                            if (ok) {
-                                onUnlocked()
-                            } else {
-                                localError = "PIN が一致しません"
-                            }
-                        }
-                    },
+                    onClick = { launchDeviceAuth("端末の認証でアクセスします", "端末の認証に失敗しました") },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(text = "PIN で解除")
+                    Text(text = "端末の認証で解除")
                 }
             }
 
             LockAuthMethod.PATTERN -> {
-                OutlinedTextField(
-                    value = patternInput,
-                    onValueChange = { patternInput = it },
-                    label = { Text(text = "パターン") },
-                    visualTransformation = PasswordVisualTransformation(),
+                Text(
+                    text = "端末に設定されているパターン / PIN / パスワードで解除します",
+                    style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 Button(
-                    onClick = {
-                        scope.launch {
-                            val ok = viewModel.unlockWithPattern(targetType, targetId, patternInput)
-                            if (ok) {
-                                onUnlocked()
-                            } else {
-                                localError = "パターンが一致しません"
-                            }
-                        }
-                    },
+                    onClick = { launchDeviceAuth("端末の認証でアクセスします", "端末の認証に失敗しました") },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(text = "パターンで解除")
+                    Text(text = "端末の認証で解除")
                 }
             }
 
-            LockAuthMethod.BIOMETRIC -> {
+            LockAuthMethod.BIOMETRIC,
+            LockAuthMethod.FACE -> {
                 Button(
-                    onClick = {
-                        if (activity == null || !biometricHelper.canUseBiometric(context)) {
-                            localError = "生体認証が利用できません"
-                            return@Button
-                        }
-                        biometricHelper.authenticate(
-                            activity = activity,
-                            title = "ロック解除",
-                            subtitle = "生体認証でアクセスします"
-                        ) { success ->
-                            if (success) {
-                                scope.launch {
-                                    viewModel.unlockWithBiometric(targetType, targetId)
-                                    onUnlocked()
-                                }
-                            } else {
-                                localError = "生体認証に失敗しました"
-                            }
-                        }
-                    },
+                    onClick = { launchDeviceAuth("生体認証でアクセスします", "生体認証に失敗しました") },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(text = "生体認証で解除")

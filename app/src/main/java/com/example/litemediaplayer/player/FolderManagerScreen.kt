@@ -2,8 +2,6 @@ package com.example.litemediaplayer.player
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,7 +18,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,28 +35,30 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.litemediaplayer.data.VideoFolder
+import com.example.litemediaplayer.lock.LockScreen
+import com.example.litemediaplayer.lock.LockTargetType
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun FolderManagerScreen(
     onBack: () -> Unit,
-    onOpenLockSettings: () -> Unit,
     viewModel: FolderManagerViewModel = hiltViewModel()
 ) {
-    val context = LocalContext.current
     val folders by viewModel.folders.collectAsStateWithLifecycle()
     val deleteTarget by viewModel.deleteTarget.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    var pendingUnlockFolder by remember { mutableStateOf<VideoFolder?>(null) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -71,6 +70,19 @@ fun FolderManagerScreen(
         val current = message ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(current)
         viewModel.consumeMessage()
+    }
+
+    pendingUnlockFolder?.let { folder ->
+        LockScreen(
+            targetType = LockTargetType.VIDEO_FOLDER,
+            targetId = folder.id,
+            onUnlocked = {
+                viewModel.toggleLock(folder)
+                pendingUnlockFolder = null
+            },
+            onCancel = { pendingUnlockFolder = null }
+        )
+        return
     }
 
     if (deleteTarget != null) {
@@ -118,7 +130,7 @@ fun FolderManagerScreen(
         ) {
             item {
                 Text(
-                    text = "長押しで削除できます。ロック設定は設定タブのグローバルロックを継承します。",
+                    text = "長押しで削除できます。ロック解除時は端末の認証を使用します。動画件数は一覧表示後にバックグラウンドで更新します。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 12.dp)
@@ -185,66 +197,27 @@ fun FolderManagerScreen(
                                 )
                             }
                             Text(
-                                text = "動画 ${folderState.videoCount} 件",
+                                text = if (folderState.videoCount >= 0) {
+                                    "動画 ${folderState.videoCount} 件"
+                                } else {
+                                    "動画数を読込中"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
 
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Switch(
-                                checked = folderState.isLocked,
-                                onCheckedChange = { newValue ->
-                                    if (!newValue) {
-                                        val targetActivity = context as? FragmentActivity
-                                        if (targetActivity != null) {
-                                            val executor = ContextCompat.getMainExecutor(targetActivity)
-                                            val biometricPrompt = BiometricPrompt(
-                                                targetActivity,
-                                                executor,
-                                                object : BiometricPrompt.AuthenticationCallback() {
-                                                    override fun onAuthenticationSucceeded(
-                                                        result: BiometricPrompt.AuthenticationResult
-                                                    ) {
-                                                        viewModel.toggleLock(folderState.folder)
-                                                    }
-
-                                                    override fun onAuthenticationError(
-                                                        errorCode: Int,
-                                                        errString: CharSequence
-                                                    ) {
-                                                        // 認証キャンセル時は状態を変更しない
-                                                    }
-                                                }
-                                            )
-                                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                                                .setTitle("ロック解除の認証")
-                                                .setSubtitle("フォルダのロックを解除するには認証が必要です")
-                                                .setAllowedAuthenticators(
-                                                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                                                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                                                )
-                                                .build()
-                                            biometricPrompt.authenticate(promptInfo)
-                                        }
-                                    } else {
-                                        viewModel.toggleLock(folderState.folder)
-                                    }
+                        Switch(
+                            checked = folderState.isLocked,
+                            onCheckedChange = {
+                                if (folderState.isLocked) {
+                                    pendingUnlockFolder = folderState.folder
+                                } else {
+                                    viewModel.toggleLock(folderState.folder)
                                 }
-                            )
-                            IconButton(onClick = {
-                                viewModel.openLockSettings()
-                                onOpenLockSettings()
-                            }) {
-                                Icon(Icons.Default.Settings, contentDescription = "ロック設定")
-                            }
-                        }
+                            },
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
                     }
                 }
             }

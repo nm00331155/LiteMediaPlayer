@@ -1,7 +1,10 @@
 package com.example.litemediaplayer.player
 
+import android.content.res.Configuration
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.graphics.Bitmap
 import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
@@ -9,10 +12,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,15 +65,19 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -78,9 +85,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
-import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -113,8 +118,6 @@ fun PlayerScreen(
     onOpenFolderManager: () -> Unit,
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
-    val context = LocalContext.current
-    val fragmentActivity = context as? FragmentActivity
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var titleTapCount by remember { mutableStateOf(0) }
@@ -124,13 +127,6 @@ fun PlayerScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         uri?.let(viewModel::addVideoFolder)
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            // タブを離れる時に非表示状態をリセット
-            viewModel.toggleHiddenFolderVisibility(false)
-        }
     }
 
     val selectedFolder = uiState.folders.find { it.id == uiState.selectedFolderId }
@@ -202,42 +198,7 @@ fun PlayerScreen(
                                 if (!uiState.fiveTapEnabled) {
                                     return@clickable
                                 }
-
-                                val currentlyShowing = uiState.showHiddenLocked
-
-                                if (!currentlyShowing) {
-                                    if (uiState.fiveTapAuthRequired) {
-                                        val targetActivity = fragmentActivity
-                                        if (targetActivity != null) {
-                                            val executor = ContextCompat.getMainExecutor(targetActivity)
-                                            val biometricPrompt = BiometricPrompt(
-                                                targetActivity,
-                                                executor,
-                                                object : BiometricPrompt.AuthenticationCallback() {
-                                                    override fun onAuthenticationSucceeded(
-                                                        result: BiometricPrompt.AuthenticationResult
-                                                    ) {
-                                                        viewModel.toggleHiddenFolderVisibility(true)
-                                                    }
-                                                }
-                                            )
-                                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                                                .setTitle("認証")
-                                                .setSubtitle("隠しフォルダを表示するには認証してください")
-                                                .setAllowedAuthenticators(
-                                                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                                                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                                                )
-                                                .build()
-                                            biometricPrompt.authenticate(promptInfo)
-                                        }
-                                    } else {
-                                        viewModel.toggleHiddenFolderVisibility(true)
-                                    }
-                                } else {
-                                    viewModel.toggleHiddenFolderVisibility(false)
-                                }
+                                viewModel.toggleHiddenFolderVisibility(!uiState.showHiddenLocked)
                             }
                         }
                     )
@@ -383,10 +344,18 @@ fun PlayerPlaybackScreen(
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
-    val activity = context as? Activity
-    val componentActivity = context as? ComponentActivity
+    val activity = remember(context) { context.findActivity() }
+    val componentActivity = remember(activity) { activity as? ComponentActivity }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val currentOrientation = LocalConfiguration.current.orientation
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val parsedVideoUri = remember(videoUri) {
+        runCatching { Uri.parse(videoUri) }
+            .getOrElse { videoUri.toUri() }
+    }
+    val videoThumbnailLoader = remember(context.applicationContext) {
+        VideoThumbnailLoader(context.applicationContext)
+    }
 
     var showSettings by remember { mutableStateOf(false) }
 
@@ -415,6 +384,13 @@ fun PlayerPlaybackScreen(
     var hasStartedPlayback by remember { mutableStateOf(false) }
     var lastInteractionAtMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var sliderWidthPx by remember { mutableStateOf(0) }
+    var resumePlaybackAfterSliderDrag by remember { mutableStateOf(false) }
+    var seekPreviewBitmap by remember(videoUri) { mutableStateOf<Bitmap?>(null) }
+    var seekPreviewVisible by remember(videoUri) { mutableStateOf(false) }
+    var previewRequestPositionMs by remember(videoUri) { mutableLongStateOf(-1L) }
+    var isSeekPreviewLoading by remember(videoUri) { mutableStateOf(false) }
+    var previewDismissRequestId by remember(videoUri) { mutableIntStateOf(0) }
+    var hasLoggedPreviewResult by remember(videoUri) { mutableStateOf(false) }
 
     fun registerInteraction() {
         controlsVisible = true
@@ -444,14 +420,94 @@ fun PlayerPlaybackScreen(
         )
     }
 
-    DisposableEffect(componentActivity, uiState.playerRotation, uiState.isPlayerOrientationLocked) {
-        val targetActivity = componentActivity ?: return@DisposableEffect onDispose { }
-        val resolvedRotation = if (uiState.isPlayerOrientationLocked) {
-            PlayerRotation.FORCE_LANDSCAPE
-        } else {
-            uiState.playerRotation
+    val resolvedRotation = when {
+        uiState.playerRotation == PlayerRotation.FORCE_PORTRAIT -> {
+            PlayerRotation.FORCE_PORTRAIT
         }
 
+        uiState.playerRotation == PlayerRotation.FORCE_LANDSCAPE -> {
+            PlayerRotation.FORCE_LANDSCAPE
+        }
+
+        uiState.isPlayerOrientationLocked &&
+            currentOrientation == Configuration.ORIENTATION_PORTRAIT -> {
+            PlayerRotation.FORCE_PORTRAIT
+        }
+
+        uiState.isPlayerOrientationLocked -> PlayerRotation.FORCE_LANDSCAPE
+        else -> PlayerRotation.FOLLOW_GLOBAL
+    }
+
+    val displayedOrientation = when (resolvedRotation) {
+        PlayerRotation.FORCE_PORTRAIT -> Configuration.ORIENTATION_PORTRAIT
+        PlayerRotation.FORCE_LANDSCAPE -> Configuration.ORIENTATION_LANDSCAPE
+        PlayerRotation.FOLLOW_GLOBAL -> currentOrientation
+    }
+
+    val quickRotationTarget = if (displayedOrientation == Configuration.ORIENTATION_PORTRAIT) {
+        PlayerRotation.FORCE_LANDSCAPE
+    } else {
+        PlayerRotation.FORCE_PORTRAIT
+    }
+
+    LaunchedEffect(videoUri, previewRequestPositionMs) {
+        val requestedPositionMs = previewRequestPositionMs
+        if (requestedPositionMs < 0L) {
+            isSeekPreviewLoading = false
+            seekPreviewBitmap = null
+            return@LaunchedEffect
+        }
+
+        isSeekPreviewLoading = true
+        delay(80)
+
+        val bitmap = videoThumbnailLoader.loadThumbnail(
+            uri = parsedVideoUri,
+            positionMs = requestedPositionMs,
+            width = 360,
+            height = 202
+        )
+
+        if (previewRequestPositionMs == requestedPositionMs) {
+            seekPreviewBitmap = bitmap
+            isSeekPreviewLoading = false
+            if (!hasLoggedPreviewResult) {
+                if (bitmap != null) {
+                    AppLogger.d(
+                        "PlayerSeekPreview",
+                        "Preview loaded at ${requestedPositionMs}ms"
+                    )
+                } else {
+                    AppLogger.w(
+                        "PlayerSeekPreview",
+                        "Preview unavailable at ${requestedPositionMs}ms"
+                    )
+                }
+                hasLoggedPreviewResult = true
+            }
+        }
+    }
+
+    LaunchedEffect(previewDismissRequestId, isSliderDragging, isSeekPreviewLoading) {
+        val requestId = previewDismissRequestId
+        if (requestId == 0 || isSliderDragging || isSeekPreviewLoading) {
+            return@LaunchedEffect
+        }
+
+        delay(350)
+
+        if (!isSliderDragging && !isSeekPreviewLoading && previewDismissRequestId == requestId) {
+            seekPreviewVisible = false
+            seekPreviewBitmap = null
+            previewRequestPositionMs = -1L
+        }
+    }
+
+    DisposableEffect(
+        componentActivity,
+        resolvedRotation
+    ) {
+        val targetActivity = componentActivity ?: return@DisposableEffect onDispose { }
         val restoreState = FullScreenUtil.enter(targetActivity, resolvedRotation)
 
         onDispose {
@@ -515,8 +571,7 @@ fun PlayerPlaybackScreen(
         }
         hasStartedPlayback = true
 
-        val target = runCatching { Uri.parse(videoUri) }
-            .getOrElse { videoUri.toUri() }
+        val target = parsedVideoUri
 
         AppLogger.d("PlayerPlayback", "Playing URI: $target (scheme=${target.scheme})")
 
@@ -576,7 +631,7 @@ fun PlayerPlaybackScreen(
         }
     }
 
-    val videoTitle = Uri.parse(videoUri).lastPathSegment
+    val videoTitle = parsedVideoUri.lastPathSegment
         ?: videoUri.substringAfterLast('/')
 
     Box(
@@ -798,45 +853,139 @@ fun PlayerPlaybackScreen(
                         value = sliderValue,
                         onValueChange = { value ->
                             registerInteraction()
-                            isSliderDragging = true
+                            val previewPositionMs = value.toLong().coerceAtLeast(0L)
+                            if (!isSliderDragging) {
+                                resumePlaybackAfterSliderDrag = exoPlayer.isPlaying
+                                if (resumePlaybackAfterSliderDrag) {
+                                    exoPlayer.pause()
+                                }
+                                isSliderDragging = true
+                                previewDismissRequestId = 0
+                                hasLoggedPreviewResult = false
+                                seekPreviewBitmap = null
+                                AppLogger.d(
+                                    "PlayerSeekPreview",
+                                    "Preview interaction start at ${previewPositionMs}ms"
+                                )
+                            }
+                            seekPreviewVisible = true
+                            previewRequestPositionMs = previewPositionMs
                             sliderValue = value
-                            // シーク中にプレイヤー自体を直接移動してフレームを表示する
-                            exoPlayer.seekTo(value.toLong())
+                            currentPositionMs = previewPositionMs
+                            exoPlayer.seekTo(previewPositionMs)
                         },
                         onValueChangeFinished = {
                             registerInteraction()
                             exoPlayer.seekTo(sliderValue.toLong())
+                            currentPositionMs = sliderValue.toLong()
                             isSliderDragging = false
+                            previewDismissRequestId += 1
+                            AppLogger.d(
+                                "PlayerSeekPreview",
+                                "Preview interaction end at ${sliderValue.toLong()}ms"
+                            )
+                            if (resumePlaybackAfterSliderDrag) {
+                                exoPlayer.play()
+                            }
+                            resumePlaybackAfterSliderDrag = false
                         },
                         valueRange = 0f..(durationMs.takeIf { it > 0L }?.toFloat() ?: 1f)
                     )
 
-                    if (isSliderDragging && durationMs > 0L) {
+                    if (seekPreviewVisible && durationMs > 0L) {
                         val density = LocalDensity.current
                         val fraction = (sliderValue / durationMs.toFloat()).coerceIn(0f, 1f)
-                        val timeTextWidthDp = 80.dp
-                        val timeTextWidthPx = with(density) { timeTextWidthDp.toPx() }
-                        val offsetXPx = (fraction * sliderWidthPx - timeTextWidthPx / 2f)
-                            .coerceIn(0f, (sliderWidthPx - timeTextWidthPx).coerceAtLeast(0f))
+                        val previewWidth = 168.dp
+                        val previewWidthPx = with(density) { previewWidth.toPx() }
+                        val offsetXPx = (fraction * sliderWidthPx - previewWidthPx / 2f)
+                            .coerceIn(0f, (sliderWidthPx - previewWidthPx).coerceAtLeast(0f))
 
-                        Box(
+                        Column(
                             modifier = Modifier
                                 .offset {
                                     IntOffset(
                                         offsetXPx.toInt(),
-                                        -with(density) { 36.dp.toPx() }.toInt()
+                                        -with(density) { 144.dp.toPx() }.toInt()
                                     )
                                 }
-                                .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            contentAlignment = Alignment.Center
+                                .width(previewWidth)
+                                .background(Color.Black.copy(alpha = 0.9f), RoundedCornerShape(10.dp))
+                                .border(
+                                    width = 1.dp,
+                                    color = Color.White.copy(alpha = 0.18f),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .padding(6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(94.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color.DarkGray),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                val previewBitmap = seekPreviewBitmap
+                                if (previewBitmap != null) {
+                                    Image(
+                                        bitmap = previewBitmap.asImageBitmap(),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else if (isSeekPreviewLoading) {
+                                    Text(
+                                        text = "読込中",
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                } else {
+                                    Text(
+                                        text = "プレビューなし",
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
+
                             Text(
                                 text = formatDuration(sliderValue.toLong()),
                                 color = Color.White,
-                                style = MaterialTheme.typography.labelMedium
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(top = 6.dp)
                             )
                         }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "中央シーク: ${uiState.seekIntervalSeconds}秒",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    TextButton(
+                        onClick = {
+                            registerInteraction()
+                            viewModel.setPlayerRotation(quickRotationTarget)
+                        }
+                    ) {
+                        Text(
+                            text = if (quickRotationTarget == PlayerRotation.FORCE_PORTRAIT) {
+                                "縦に切替"
+                            } else {
+                                "横に切替"
+                            },
+                            color = Color.White
+                        )
                     }
                 }
             }
@@ -860,6 +1009,14 @@ fun PlayerPlaybackScreen(
                 )
             }
         }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 
@@ -1040,7 +1197,13 @@ private fun PlayerSettingsContent(
             onClick = { onRotationChange(PlayerRotation.FORCE_LANDSCAPE) },
             enabled = uiState.playerRotation != PlayerRotation.FORCE_LANDSCAPE
         ) {
-            Text("LANDSCAPE")
+            Text("横固定")
+        }
+        Button(
+            onClick = { onRotationChange(PlayerRotation.FORCE_PORTRAIT) },
+            enabled = uiState.playerRotation != PlayerRotation.FORCE_PORTRAIT
+        ) {
+            Text("縦固定")
         }
     }
 
@@ -1087,18 +1250,24 @@ private fun PlayerSettingsContent(
         onChange = onGestureDoubleTapPlayPauseChange
     )
 
-    Text("明るさ調整エリア: 左端〜${(uiState.gestureBrightnessZoneEnd * 100).toInt()}%")
+    Text("明るさ調整エリア: 上半分の左端〜${(uiState.gestureBrightnessZoneEnd * 100).toInt()}%")
     Slider(
         value = uiState.gestureBrightnessZoneEnd,
         onValueChange = onGestureBrightnessZoneEndChange,
         valueRange = 0.1f..0.5f
     )
 
-    Text("音量調整エリア: ${(uiState.gestureVolumeZoneStart * 100).toInt()}%〜右端")
+    Text("音量調整エリア: 上半分の${(uiState.gestureVolumeZoneStart * 100).toInt()}%〜右端")
     Slider(
         value = uiState.gestureVolumeZoneStart,
         onValueChange = onGestureVolumeZoneStartChange,
         valueRange = 0.5f..0.9f
+    )
+
+    Text(
+        text = "下半分は常にシーク操作として扱います",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
     )
 
     Button(
@@ -1118,7 +1287,7 @@ private fun SeekIntervalSetting(
     val presets = listOf(5, 10, 15, 30)
     val isCustom = currentValue !in presets
 
-    Text(text = "スワイプシーク間隔")
+    Text(text = "画面中央シーク間隔")
     Text(
         text = "現在: ${currentValue}秒",
         style = MaterialTheme.typography.bodySmall,
@@ -1176,7 +1345,7 @@ private fun CustomSeekIntervalDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("シーク間隔を設定") },
+        title = { Text("画面中央シーク間隔を設定") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("スライダーで選択")

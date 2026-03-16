@@ -31,7 +31,8 @@ enum class GestureMode {
 
 data class GestureZoneConfig(
     val brightnessZoneEnd: Float = 0.3f,
-    val volumeZoneStart: Float = 0.7f
+    val volumeZoneStart: Float = 0.7f,
+    val controlZoneBottom: Float = 0.5f
 )
 
 @Composable
@@ -82,9 +83,14 @@ fun GestureOverlay(
                 detectDragGestures(
                     onDragStart = { offset ->
                         val xFraction = offset.x / size.width.toFloat()
+                        val yFraction = offset.y / size.height.toFloat()
                         gestureMode = when {
-                            xFraction <= currentZoneConfig.brightnessZoneEnd && currentEnableBrightness -> GestureMode.Brightness
-                            xFraction >= currentZoneConfig.volumeZoneStart && currentEnableVolume -> GestureMode.Volume
+                            yFraction <= currentZoneConfig.controlZoneBottom &&
+                                xFraction <= currentZoneConfig.brightnessZoneEnd &&
+                                currentEnableBrightness -> GestureMode.Brightness
+                            yFraction <= currentZoneConfig.controlZoneBottom &&
+                                xFraction >= currentZoneConfig.volumeZoneStart &&
+                                currentEnableVolume -> GestureMode.Volume
                             currentEnableSeek -> GestureMode.Seek
                             else -> null
                         }
@@ -167,8 +173,7 @@ private fun calculateSeekDeltaMs(
 ): Long {
     if (containerWidth <= 0f) return 0L
 
-    val halfWidth = containerWidth / 2f
-    val ratio = (distanceX / halfWidth).coerceIn(-4f, 4f)
-    val maxSeekMs = seekIntervalSeconds * 1000L
-    return (ratio * maxSeekMs.toFloat()).roundToLong()
+    val stepWidth = (containerWidth * 0.18f).coerceAtLeast(72f)
+    val steps = (distanceX / stepWidth).roundToLong().coerceIn(-8L, 8L)
+    return steps * seekIntervalSeconds * 1000L
 }

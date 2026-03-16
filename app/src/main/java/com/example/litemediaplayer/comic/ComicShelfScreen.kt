@@ -1,10 +1,10 @@
 package com.example.litemediaplayer.comic
 
+import android.content.Intent
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,18 +41,21 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,16 +64,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import coil.compose.AsyncImage
 import com.example.litemediaplayer.R
 import com.example.litemediaplayer.core.ui.PageSettingsSheet
-import android.os.SystemClock
+import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,12 +84,12 @@ fun ComicShelfScreen(
     viewModel: ComicReaderViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
-    val fragmentActivity = context as? FragmentActivity
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showAddMenu by rememberSaveable { mutableStateOf(false) }
-    var titleTapCount by remember { mutableStateOf(0) }
+    var titleTapCount by remember { mutableIntStateOf(0) }
     var lastTitleTapMs by remember { mutableLongStateOf(0L) }
+    val coroutineScope = rememberCoroutineScope()
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -102,10 +107,11 @@ fun ComicShelfScreen(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            // タブを離れる時に非表示状態をリセット
-            viewModel.toggleHiddenComicVisibility(false)
+    val progressImportPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importProgress(uri)
         }
     }
 
@@ -131,7 +137,19 @@ fun ComicShelfScreen(
             onTrimToleranceChange = viewModel::updateTrimTolerance,
             onTrimSafetyMarginChange = viewModel::updateTrimSafetyMargin,
             onTrimSensitivityChange = viewModel::updateTrimSensitivity,
-            onTouchZoneChange = viewModel::updateTouchZoneConfig
+            onTouchZoneChange = viewModel::updateTouchZoneConfig,
+            registeredSyncDeviceCount = uiState.registeredSyncDeviceCount,
+            onShareProgress = {
+                coroutineScope.launch {
+                    val shareIntent = viewModel.buildProgressShareIntent() ?: return@launch
+                    context.startActivity(
+                        Intent.createChooser(shareIntent, "コミック進捗を共有")
+                    )
+                }
+            },
+            onImportProgress = {
+                progressImportPicker.launch(arrayOf("application/json", "*/*"))
+            }
         )
     }
 
@@ -155,42 +173,7 @@ fun ComicShelfScreen(
                                 if (!uiState.fiveTapEnabled) {
                                     return@clickable
                                 }
-
-                                val currentlyShowing = uiState.showHiddenLocked
-
-                                if (!currentlyShowing) {
-                                    if (uiState.fiveTapAuthRequired) {
-                                        val targetActivity = fragmentActivity
-                                        if (targetActivity != null) {
-                                            val executor = ContextCompat.getMainExecutor(targetActivity)
-                                            val prompt = BiometricPrompt(
-                                                targetActivity,
-                                                executor,
-                                                object : BiometricPrompt.AuthenticationCallback() {
-                                                    override fun onAuthenticationSucceeded(
-                                                        result: BiometricPrompt.AuthenticationResult
-                                                    ) {
-                                                        viewModel.toggleHiddenComicVisibility(true)
-                                                    }
-                                                }
-                                            )
-                                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                                                .setTitle("認証")
-                                                .setSubtitle("隠しコミックを表示するには認証してください")
-                                                .setAllowedAuthenticators(
-                                                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                                                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                                                )
-                                                .build()
-                                            prompt.authenticate(promptInfo)
-                                        }
-                                    } else {
-                                        viewModel.toggleHiddenComicVisibility(true)
-                                    }
-                                } else {
-                                    viewModel.toggleHiddenComicVisibility(false)
-                                }
+                                viewModel.toggleHiddenComicVisibility(!uiState.showHiddenLocked)
                             }
                         },
                         maxLines = 1,
@@ -258,6 +241,17 @@ fun ComicShelfScreen(
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            uiState.statusMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .clickable { viewModel.consumeStatus() }
+                )
+            }
+
             uiState.errorMessage?.let { message ->
                 Text(
                     text = message,
@@ -272,7 +266,9 @@ fun ComicShelfScreen(
             val selectedFolderId = uiState.selectedFolderId
             val displayBooks = remember(uiState.books, selectedFolderId) {
                 if (selectedFolderId != null) {
-                    uiState.books.filter { it.folderId == selectedFolderId }
+                    uiState.books
+                        .filter { it.folderId == selectedFolderId }
+                        .sortedWith(comicBookNaturalComparator)
                 } else {
                     emptyList()
                 }
@@ -417,9 +413,48 @@ private fun ComicSettingsContent(
     onTrimToleranceChange: (Int) -> Unit,
     onTrimSafetyMarginChange: (Int) -> Unit,
     onTrimSensitivityChange: (TrimSensitivity) -> Unit,
-    onTouchZoneChange: (TouchZoneConfig) -> Unit
+    onTouchZoneChange: (TouchZoneConfig) -> Unit,
+    registeredSyncDeviceCount: Int,
+    onShareProgress: () -> Unit,
+    onImportProgress: () -> Unit
 ) {
-    Text("めくり方向")
+    val defaultSettings = ComicSettingsDefaults.values
+    val defaultTouchZone = defaultSettings.touchZone
+
+    Text(
+        text = "進捗共有",
+        style = MaterialTheme.typography.titleMedium
+    )
+
+    Text(
+        text = if (registeredSyncDeviceCount > 0) {
+            "共有ボタンで登録端末へ直接送信します。未到達時はJSONファイル共有に切り替えます。登録済み: ${registeredSyncDeviceCount}台"
+        } else {
+            "登録端末がないため、共有ボタンはJSONファイル共有を開きます。端末登録は設定タブの進捗共有から行えます。"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+
+    OutlinedButton(
+        onClick = onShareProgress,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("進捗を共有")
+    }
+
+    OutlinedButton(
+        onClick = onImportProgress,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("進捗を取り込む")
+    }
+
+    ResettableSectionHeader(
+        label = "めくり方向",
+        onReset = { onDirectionChange(defaultSettings.readingDirection) }
+    )
     OptionChips(
         options = ReadingDirection.entries,
         selected = settings.readingDirection,
@@ -427,7 +462,10 @@ private fun ComicSettingsContent(
         onSelect = onDirectionChange
     )
 
-    Text("閲覧モード")
+    ResettableSectionHeader(
+        label = "閲覧モード",
+        onReset = { onModeChange(defaultSettings.mode) }
+    )
     OptionChips(
         options = ReaderMode.entries,
         selected = settings.mode,
@@ -441,7 +479,10 @@ private fun ComicSettingsContent(
         onSelect = onModeChange
     )
 
-    Text("表示サイズ")
+    ResettableSectionHeader(
+        label = "表示サイズ",
+        onReset = { onGridSizeChange(defaultSettings.gridSize) }
+    )
     OptionChips(
         options = GridSize.entries,
         selected = settings.gridSize,
@@ -449,7 +490,10 @@ private fun ComicSettingsContent(
         onSelect = onGridSizeChange
     )
 
-    Text("アニメーション")
+    ResettableSectionHeader(
+        label = "アニメーション",
+        onReset = { onAnimationChange(defaultSettings.animation) }
+    )
     OptionChips(
         options = PageAnimation.entries,
         selected = settings.animation,
@@ -464,73 +508,111 @@ private fun ComicSettingsContent(
         onSelect = onAnimationChange
     )
 
-    Text("アニメーション速度: ${settings.animationSpeedMs}ms")
-    Slider(
-        value = settings.animationSpeedMs.toFloat(),
-        onValueChange = { onAnimationSpeedChange(it.toInt()) },
-        valueRange = 100f..1000f
+    IntSliderSetting(
+        label = "アニメーション速度",
+        value = settings.animationSpeedMs,
+        min = ComicSettingsDefaults.ANIMATION_SPEED_MIN,
+        max = ComicSettingsDefaults.ANIMATION_SPEED_MAX,
+        suffix = "ms",
+        onValueChange = onAnimationSpeedChange,
+        onReset = { onAnimationSpeedChange(defaultSettings.animationSpeedMs) }
     )
 
+    ResettableSectionHeader(
+        label = "ブルーライトフィルタ",
+        onReset = { onBlueLightChange(defaultSettings.blueLightFilterEnabled) }
+    )
     SettingSwitchRow(
         label = "ブルーライトフィルタ",
         checked = settings.blueLightFilterEnabled,
         onChange = onBlueLightChange
     )
 
-    Text("ズーム上限: ${"%.1f".format(settings.zoomMax)}x")
-    Slider(
+    FloatSliderSetting(
+        label = "ズーム上限",
         value = settings.zoomMax,
+        min = ComicSettingsDefaults.ZOOM_MAX_MIN,
+        max = ComicSettingsDefaults.ZOOM_MAX_MAX,
+        suffix = "x",
+        decimals = 1,
         onValueChange = onZoomMaxChange,
-        valueRange = 2f..5f
+        onReset = { onZoomMaxChange(defaultSettings.zoomMax) }
     )
 
+    ResettableSectionHeader(
+        label = "自動分割",
+        onReset = { onAutoSplitChange(defaultSettings.autoSplitEnabled) }
+    )
     SettingSwitchRow(
         label = "自動分割",
         checked = settings.autoSplitEnabled,
         onChange = onAutoSplitChange
     )
 
-    Text("見開き判定閾値: ${"%.2f".format(settings.splitThreshold)}")
-    Slider(
+    FloatSliderSetting(
+        label = "見開き判定閾値",
         value = settings.splitThreshold,
+        min = ComicSettingsDefaults.SPLIT_THRESHOLD_MIN,
+        max = ComicSettingsDefaults.SPLIT_THRESHOLD_MAX,
+        decimals = 2,
         onValueChange = onSplitThresholdChange,
-        valueRange = 1f..2f
+        onReset = { onSplitThresholdChange(defaultSettings.splitThreshold) }
     )
 
+    ResettableSectionHeader(
+        label = "スマート分割線検出",
+        onReset = { onSmartSplitChange(defaultSettings.smartSplitEnabled) }
+    )
     SettingSwitchRow(
         label = "スマート分割線検出",
         checked = settings.smartSplitEnabled,
         onChange = onSmartSplitChange
     )
 
-    Text("分割位置微調整: ${"%.2f".format(settings.splitOffsetPercent)}")
-    Slider(
+    FloatSliderSetting(
+        label = "分割位置微調整",
         value = settings.splitOffsetPercent,
+        min = ComicSettingsDefaults.SPLIT_OFFSET_MIN,
+        max = ComicSettingsDefaults.SPLIT_OFFSET_MAX,
+        decimals = 2,
+        allowNegative = true,
         onValueChange = onSplitOffsetChange,
-        valueRange = -0.05f..0.05f
+        onReset = { onSplitOffsetChange(defaultSettings.splitOffsetPercent) }
     )
 
+    ResettableSectionHeader(
+        label = "自動トリミング",
+        onReset = { onAutoTrimChange(defaultSettings.autoTrimEnabled) }
+    )
     SettingSwitchRow(
         label = "自動トリミング",
         checked = settings.autoTrimEnabled,
         onChange = onAutoTrimChange
     )
 
-    Text("背景色許容差: ${settings.trimTolerance}")
-    Slider(
-        value = settings.trimTolerance.toFloat(),
-        onValueChange = { onTrimToleranceChange(it.toInt()) },
-        valueRange = 10f..60f
+    IntSliderSetting(
+        label = "背景色許容差",
+        value = settings.trimTolerance,
+        min = ComicSettingsDefaults.TRIM_TOLERANCE_MIN,
+        max = ComicSettingsDefaults.TRIM_TOLERANCE_MAX,
+        onValueChange = onTrimToleranceChange,
+        onReset = { onTrimToleranceChange(defaultSettings.trimTolerance) }
     )
 
-    Text("安全マージン: ${settings.trimSafetyMargin}px")
-    Slider(
-        value = settings.trimSafetyMargin.toFloat(),
-        onValueChange = { onTrimSafetyMarginChange(it.toInt()) },
-        valueRange = 0f..20f
+    IntSliderSetting(
+        label = "安全マージン",
+        value = settings.trimSafetyMargin,
+        min = ComicSettingsDefaults.TRIM_SAFETY_MARGIN_MIN,
+        max = ComicSettingsDefaults.TRIM_SAFETY_MARGIN_MAX,
+        suffix = "px",
+        onValueChange = onTrimSafetyMarginChange,
+        onReset = { onTrimSafetyMarginChange(defaultSettings.trimSafetyMargin) }
     )
 
-    Text("コンテンツ検出感度")
+    ResettableSectionHeader(
+        label = "コンテンツ検出感度",
+        onReset = { onTrimSensitivityChange(defaultSettings.trimSensitivity) }
+    )
     OptionChips(
         options = TrimSensitivity.entries,
         selected = settings.trimSensitivity,
@@ -557,7 +639,10 @@ private fun ComicSettingsContent(
         modifier = Modifier.padding(bottom = 8.dp)
     )
 
-    Text("タッチレイアウト")
+    ResettableSectionHeader(
+        label = "タッチレイアウト",
+        onReset = { onTouchZoneChange(settings.touchZone.copy(layout = defaultTouchZone.layout)) }
+    )
     OptionChips(
         options = TouchZoneLayout.entries,
         selected = settings.touchZone.layout,
@@ -567,34 +652,161 @@ private fun ComicSettingsContent(
         }
     )
 
-    Text("長押し判定時間: ${settings.touchZone.longPressMs}ms")
-    Slider(
-        value = settings.touchZone.longPressMs.toFloat(),
-        onValueChange = {
-            onTouchZoneChange(settings.touchZone.copy(longPressMs = it.toInt()))
-        },
-        valueRange = 200f..1500f
+    IntSliderSetting(
+        label = "長押し判定時間",
+        value = settings.touchZone.longPressMs,
+        min = ComicSettingsDefaults.TOUCH_LONG_PRESS_MIN,
+        max = ComicSettingsDefaults.TOUCH_LONG_PRESS_MAX,
+        suffix = "ms",
+        onValueChange = { onTouchZoneChange(settings.touchZone.copy(longPressMs = it)) },
+        onReset = {
+            onTouchZoneChange(settings.touchZone.copy(longPressMs = defaultTouchZone.longPressMs))
+        }
     )
 
-    Text("スキップページ数: ${settings.touchZone.skipPageCount}")
-    Slider(
-        value = settings.touchZone.skipPageCount.toFloat(),
-        onValueChange = {
-            onTouchZoneChange(settings.touchZone.copy(skipPageCount = it.toInt()))
-        },
-        valueRange = 1f..50f
+    IntSliderSetting(
+        label = "スキップページ数",
+        value = settings.touchZone.skipPageCount,
+        min = ComicSettingsDefaults.TOUCH_SKIP_PAGE_MIN,
+        max = ComicSettingsDefaults.TOUCH_SKIP_PAGE_MAX,
+        onValueChange = { onTouchZoneChange(settings.touchZone.copy(skipPageCount = it)) },
+        onReset = {
+            onTouchZoneChange(settings.touchZone.copy(skipPageCount = defaultTouchZone.skipPageCount))
+        }
     )
 
-    Text("音量上ボタン")
+    ResettableSectionHeader(
+        label = "音量上ボタン",
+        onReset = {
+            onTouchZoneChange(settings.touchZone.copy(volumeUpAction = defaultTouchZone.volumeUpAction))
+        }
+    )
     TouchActionSelector(
         current = settings.touchZone.volumeUpAction,
         onSelect = { onTouchZoneChange(settings.touchZone.copy(volumeUpAction = it)) }
     )
 
-    Text("音量下ボタン")
+    ResettableSectionHeader(
+        label = "音量下ボタン",
+        onReset = {
+            onTouchZoneChange(settings.touchZone.copy(volumeDownAction = defaultTouchZone.volumeDownAction))
+        }
+    )
     TouchActionSelector(
         current = settings.touchZone.volumeDownAction,
         onSelect = { onTouchZoneChange(settings.touchZone.copy(volumeDownAction = it)) }
+    )
+}
+
+@Composable
+private fun ResettableSectionHeader(
+    label: String,
+    onReset: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label)
+        TextButton(onClick = onReset) {
+            Text("初期値")
+        }
+    }
+}
+
+@Composable
+private fun IntSliderSetting(
+    label: String,
+    value: Int,
+    min: Int,
+    max: Int,
+    onValueChange: (Int) -> Unit,
+    onReset: () -> Unit,
+    suffix: String = ""
+) {
+    var textValue by remember(value) { mutableStateOf(value.toString()) }
+
+    ResettableSectionHeader(
+        label = "$label: ${value}$suffix",
+        onReset = onReset
+    )
+
+    OutlinedTextField(
+        value = textValue,
+        onValueChange = { input ->
+            val filtered = input.filter { it.isDigit() }
+            textValue = filtered
+            filtered.toIntOrNull()?.coerceIn(min, max)?.let(onValueChange)
+        },
+        label = { Text("直接入力 ($min〜$max$suffix)") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    Slider(
+        value = value.toFloat(),
+        onValueChange = { onValueChange(it.roundToInt().coerceIn(min, max)) },
+        valueRange = min.toFloat()..max.toFloat()
+    )
+}
+
+@Composable
+private fun FloatSliderSetting(
+    label: String,
+    value: Float,
+    min: Float,
+    max: Float,
+    onValueChange: (Float) -> Unit,
+    onReset: () -> Unit,
+    decimals: Int,
+    suffix: String = "",
+    allowNegative: Boolean = false
+) {
+    val format = when (decimals) {
+        1 -> "%.1f"
+        2 -> "%.2f"
+        else -> "%f"
+    }
+    var textValue by remember(value) {
+        mutableStateOf(String.format(Locale.US, format, value))
+    }
+
+    ResettableSectionHeader(
+        label = "$label: ${String.format(Locale.US, format, value)}$suffix",
+        onReset = onReset
+    )
+
+    OutlinedTextField(
+        value = textValue,
+        onValueChange = { input ->
+            val filtered = buildString {
+                input.forEachIndexed { index, ch ->
+                    when {
+                        ch.isDigit() -> append(ch)
+                        ch == '.' && '.' !in this -> append(ch)
+                        allowNegative && ch == '-' && index == 0 && '-' !in this -> append(ch)
+                    }
+                }
+            }
+            textValue = filtered
+            filtered.toFloatOrNull()?.coerceIn(min, max)?.let(onValueChange)
+        },
+        label = {
+            Text(
+                "直接入力 (${String.format(Locale.US, format, min)}〜${String.format(Locale.US, format, max)}$suffix)"
+            )
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    Slider(
+        value = value,
+        onValueChange = { onValueChange(it.coerceIn(min, max)) },
+        valueRange = min..max
     )
 }
 

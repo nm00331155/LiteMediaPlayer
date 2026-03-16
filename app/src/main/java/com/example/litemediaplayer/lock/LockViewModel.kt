@@ -24,7 +24,23 @@ enum class LockTargetType {
 enum class LockAuthMethod {
     PIN,
     PATTERN,
-    BIOMETRIC
+    BIOMETRIC,
+    FACE;
+
+    companion object {
+        val selectableEntries: List<LockAuthMethod> = listOf(PIN, PATTERN, BIOMETRIC)
+
+        fun fromStoredValue(value: String?): LockAuthMethod {
+            if (value.isNullOrBlank()) {
+                return PIN
+            }
+
+            return when (value) {
+                FACE.name -> BIOMETRIC
+                else -> entries.firstOrNull { it.name == value } ?: PIN
+            }
+        }
+    }
 }
 
 data class LockUiState(

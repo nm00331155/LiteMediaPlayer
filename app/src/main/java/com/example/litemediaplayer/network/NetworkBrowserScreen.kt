@@ -899,6 +899,7 @@ class NetworkBrowserViewModel @Inject constructor(
 fun NetworkBrowserScreen(
     onPlayVideo: (String) -> Unit = {},
     onOpenComic: (String) -> Unit = {},
+    onBack: (() -> Unit)? = null,
     viewModel: NetworkBrowserViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -978,6 +979,13 @@ fun NetworkBrowserScreen(
             if (selectedServer == null) {
                 TopAppBar(
                     title = { Text("ネットワーク") },
+                    navigationIcon = {
+                        if (onBack != null) {
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る")
+                            }
+                        }
+                    },
                     actions = {
                         IconButton(onClick = { showSettings = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "ネットワーク設定")

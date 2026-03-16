@@ -32,6 +32,7 @@ enum class RotationSetting(val displayName: String) {
 
 enum class PlayerRotation {
     FORCE_LANDSCAPE,
+    FORCE_PORTRAIT,
     FOLLOW_GLOBAL
 }
 
@@ -67,6 +68,7 @@ data class AppSettingsState(
     val playerResizeMode: PlayerResizeMode = PlayerResizeMode.FIT,
     val resumeBehavior: ResumeBehavior = ResumeBehavior.CONTINUE_FROM_LAST,
     val lockAuthMethod: String = "PIN",
+    val lockHideEnabled: Boolean = true,
     val relockTimeoutMinutes: Int = 5,
     val hiddenLockContentVisible: Boolean = false,
     val memoryThreshold: Float = 0.7f,
@@ -87,7 +89,7 @@ data class AppSettingsState(
     val gestureBrightnessZoneEnd: Float = 0.3f,
     val gestureVolumeZoneStart: Float = 0.7f,
     val fiveTapEnabled: Boolean = true,
-    val fiveTapAuthRequired: Boolean = true
+    val fiveTapAuthRequired: Boolean = false
 )
 
 @Singleton
@@ -118,6 +120,7 @@ class AppSettingsStore @Inject constructor(
                     ?.toEnumOrDefault(ResumeBehavior.CONTINUE_FROM_LAST)
                     ?: ResumeBehavior.CONTINUE_FROM_LAST,
                 lockAuthMethod = prefs[Keys.LOCK_AUTH_METHOD] ?: "PIN",
+                lockHideEnabled = prefs[Keys.LOCK_HIDE_ENABLED] ?: true,
                 relockTimeoutMinutes = prefs[Keys.RELOCK_TIMEOUT] ?: 5,
                 hiddenLockContentVisible = (prefs[Keys.HIDDEN_LOCK_VISIBLE] ?: 0) == 1,
                 memoryThreshold = prefs[Keys.MEMORY_THRESHOLD] ?: 0.7f,
@@ -142,7 +145,7 @@ class AppSettingsStore @Inject constructor(
                 gestureBrightnessZoneEnd = prefs[Keys.GESTURE_BRIGHTNESS_ZONE_END] ?: 0.3f,
                 gestureVolumeZoneStart = prefs[Keys.GESTURE_VOLUME_ZONE_START] ?: 0.7f,
                 fiveTapEnabled = prefs[Keys.FIVE_TAP_ENABLED] ?: true,
-                fiveTapAuthRequired = prefs[Keys.FIVE_TAP_AUTH_REQUIRED] ?: true
+                fiveTapAuthRequired = prefs[Keys.FIVE_TAP_AUTH_REQUIRED] ?: false
             )
         }
 
@@ -197,6 +200,12 @@ class AppSettingsStore @Inject constructor(
     suspend fun updateLockAuthMethod(authMethod: String) {
         context.appSettingsDataStore.edit { prefs ->
             prefs[Keys.LOCK_AUTH_METHOD] = authMethod
+        }
+    }
+
+    suspend fun updateLockHideEnabled(enabled: Boolean) {
+        context.appSettingsDataStore.edit { prefs ->
+            prefs[Keys.LOCK_HIDE_ENABLED] = enabled
         }
     }
 
@@ -342,6 +351,7 @@ private object Keys {
     val PLAYER_RESIZE_MODE: Preferences.Key<String> = stringPreferencesKey("player_resize_mode")
     val RESUME_BEHAVIOR: Preferences.Key<String> = stringPreferencesKey("resume_behavior")
     val LOCK_AUTH_METHOD: Preferences.Key<String> = stringPreferencesKey("lock_auth_method")
+    val LOCK_HIDE_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("lock_hide_enabled")
     val RELOCK_TIMEOUT: Preferences.Key<Int> = intPreferencesKey("relock_timeout")
     val HIDDEN_LOCK_VISIBLE: Preferences.Key<Int> = intPreferencesKey("hidden_lock_visible")
     val MEMORY_THRESHOLD: Preferences.Key<Float> = floatPreferencesKey("memory_threshold")

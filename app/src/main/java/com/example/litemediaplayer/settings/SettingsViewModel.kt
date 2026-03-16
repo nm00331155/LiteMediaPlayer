@@ -1,6 +1,11 @@
 package com.example.litemediaplayer.settings
 
 import android.content.Context
+import com.example.litemediaplayer.comic.ComicProgressLanSyncManager
+import com.example.litemediaplayer.comic.ComicProgressSyncSettings
+import com.example.litemediaplayer.comic.ComicProgressSyncStore
+import com.example.litemediaplayer.comic.ComicSyncDevice
+import com.example.litemediaplayer.comic.ComicSyncLocalEndpoint
 import com.example.litemediaplayer.comic.ComicReaderSettings
 import com.example.litemediaplayer.comic.ComicSettings
 import com.example.litemediaplayer.comic.PageAnimation
@@ -31,17 +36,45 @@ import kotlinx.coroutines.launch
 
 data class SettingsUiState(
     val appSettings: AppSettingsState = AppSettingsState(),
+    val selectedLockAuthMethod: LockAuthMethod = LockAuthMethod.PIN,
     val comicSettings: ComicReaderSettings = ComicReaderSettings(),
+    val syncSettings: ComicProgressSyncSettings = ComicProgressSyncSettings(),
+    val discoveredSyncDevices: List<ComicSyncDevice> = emptyList(),
+    val localSyncEndpoint: ComicSyncLocalEndpoint? = null,
+    val syncDiscoveryInProgress: Boolean = false,
     val memorySnapshot: MemorySnapshot = MemorySnapshot(usedBytes = 0L, maxBytes = 1L),
     val memoryModuleUsage: Map<String, Long> = emptyMap(),
     val lockSecretDraft: String = "",
     val statusMessage: String? = null
 )
 
+private data class BaseSettingsBundle(
+    val appSettings: AppSettingsState,
+    val selectedLockAuthMethod: LockAuthMethod,
+    val comicSettings: ComicReaderSettings,
+    val memorySnapshot: MemorySnapshot,
+    val lockSecretDraft: String,
+    val statusMessage: String?
+)
+
+private data class LockSettingsBundle(
+    val appSettings: AppSettingsState,
+    val selectedLockAuthMethod: LockAuthMethod
+)
+
+private data class SyncSettingsBundle(
+    val syncSettings: ComicProgressSyncSettings,
+    val discoveredSyncDevices: List<ComicSyncDevice>,
+    val localSyncEndpoint: ComicSyncLocalEndpoint?,
+    val syncDiscoveryInProgress: Boolean
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val appSettingsStore: AppSettingsStore,
     private val comicSettings: ComicSettings,
+    private val comicProgressSyncStore: ComicProgressSyncStore,
+    private val comicProgressLanSyncManager: ComicProgressLanSyncManager,
     private val memoryMonitor: MemoryMonitor,
     private val lockConfigDao: LockConfigDao,
     private val cryptoUtil: CryptoUtil,
@@ -49,22 +82,67 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val lockSecretDraft = MutableStateFlow("")
+    private val selectedLockAuthMethod = MutableStateFlow<LockAuthMethod?>(null)
+    private val syncDiscoveryInProgress = MutableStateFlow(false)
     private val statusMessage = MutableStateFlow<String?>(null)
 
-    val uiState: StateFlow<SettingsUiState> = combine(
+    private val lockSettingsState = combine(
         appSettingsStore.settingsFlow,
+        selectedLockAuthMethod
+    ) { app, selectedMethod ->
+        LockSettingsBundle(
+            appSettings = app,
+            selectedLockAuthMethod = selectedMethod ?: LockAuthMethod.fromStoredValue(app.lockAuthMethod)
+        )
+    }
+
+    private val baseState = combine(
+        lockSettingsState,
         comicSettings.settingsFlow,
         memoryMonitor.snapshot,
         lockSecretDraft,
         statusMessage
-    ) { app, comic, memory, draft, status ->
-        SettingsUiState(
-            appSettings = app,
+    ) { lockSettings, comic, memory, draft, status ->
+        BaseSettingsBundle(
+            appSettings = lockSettings.appSettings,
+            selectedLockAuthMethod = lockSettings.selectedLockAuthMethod,
             comicSettings = comic,
             memorySnapshot = memory,
-            memoryModuleUsage = memoryMonitor.estimateModuleUsageMb(),
             lockSecretDraft = draft,
             statusMessage = status
+        )
+    }
+
+    private val syncState = combine(
+        comicProgressSyncStore.settingsFlow,
+        comicProgressLanSyncManager.discoveredDevices,
+        comicProgressLanSyncManager.localEndpoint,
+        syncDiscoveryInProgress
+    ) { syncSettings, discovered, endpoint, discoveryLoading ->
+        SyncSettingsBundle(
+            syncSettings = syncSettings,
+            discoveredSyncDevices = discovered,
+            localSyncEndpoint = endpoint,
+            syncDiscoveryInProgress = discoveryLoading
+        )
+    }
+
+    val uiState: StateFlow<SettingsUiState> = combine(
+        baseState,
+        syncState
+    ) { base, sync ->
+        SettingsUiState(
+            appSettings = base.appSettings,
+            selectedLockAuthMethod = base.selectedLockAuthMethod,
+            comicSettings = base.comicSettings,
+            syncSettings = sync.syncSettings,
+            discoveredSyncDevices = sync.discoveredSyncDevices,
+            localSyncEndpoint = sync.localSyncEndpoint,
+            syncDiscoveryInProgress = sync.syncDiscoveryInProgress,
+            memorySnapshot = base.memorySnapshot,
+            memoryModuleUsage = memoryMonitor.estimateModuleUsageMb(),
+            lockSecretDraft = base.lockSecretDraft,
+            statusMessage = base.statusMessage
         )
     }.stateIn(
         scope = viewModelScope,
@@ -74,6 +152,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         memoryMonitor.refresh()
+        comicProgressLanSyncManager.start()
     }
 
     fun updateSeekInterval(seconds: Int) {
@@ -209,8 +288,16 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun updateLockAuthMethod(authMethod: LockAuthMethod) {
+        val normalizedMethod = LockAuthMethod.fromStoredValue(authMethod.name)
+        selectedLockAuthMethod.value = normalizedMethod
+        if (normalizedMethod == LockAuthMethod.BIOMETRIC) {
+            lockSecretDraft.value = ""
+        }
+    }
+
+    fun updateLockHideEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            appSettingsStore.updateLockAuthMethod(authMethod.name)
+            appSettingsStore.updateLockHideEnabled(enabled)
         }
     }
 
@@ -220,48 +307,90 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun updateHiddenLockVisibility(visible: Boolean) {
-        viewModelScope.launch {
-            appSettingsStore.updateHiddenLockContentVisible(visible)
-        }
-    }
-
     fun updateLockSecretDraft(value: String) {
         lockSecretDraft.value = value
     }
 
     fun saveAppLockConfig() {
         val state = uiState.value
-        val authMethod = state.appSettings.lockAuthMethod
-        val secret = state.lockSecretDraft
+        val method = state.selectedLockAuthMethod
 
         viewModelScope.launch(Dispatchers.IO) {
-            val method = runCatching { LockAuthMethod.valueOf(authMethod) }
-                .getOrElse { LockAuthMethod.PIN }
-
-            if (method == LockAuthMethod.PIN && !secret.matches(Regex("^[0-9]{4,8}$"))) {
-                statusMessage.value = "PIN は4〜8桁の数字で入力してください"
-                return@launch
-            }
-
-            val pinHash = if (method == LockAuthMethod.PIN) cryptoUtil.hashSecret(secret) else null
-            val patternHash = if (method == LockAuthMethod.PATTERN) cryptoUtil.hashSecret(secret) else null
-
-            lockConfigDao.upsert(
-                LockConfig(
-                    targetType = LockTargetType.APP_GLOBAL.name,
-                    targetId = null,
-                    authMethod = method.name,
-                    pinHash = pinHash,
-                    patternHash = patternHash,
-                    autoLockMinutes = state.appSettings.relockTimeoutMinutes,
-                    isHidden = !state.appSettings.hiddenLockContentVisible,
-                    isEnabled = true
-                )
+            val existingGlobal = lockConfigDao.findByTarget(
+                LockTargetType.APP_GLOBAL.name,
+                null
             )
 
-            statusMessage.value = "ロック設定を保存しました"
+            appSettingsStore.updateLockAuthMethod(method.name)
+
+            val updatedGlobal = LockConfig(
+                id = existingGlobal?.id ?: 0,
+                targetType = LockTargetType.APP_GLOBAL.name,
+                targetId = null,
+                authMethod = method.name,
+                pinHash = null,
+                patternHash = null,
+                autoLockMinutes = state.appSettings.relockTimeoutMinutes,
+                isHidden = true,
+                isEnabled = true
+            )
+
+            lockConfigDao.upsert(updatedGlobal)
+            lockConfigDao.findAll()
+                .filter { it.targetType != LockTargetType.APP_GLOBAL.name }
+                .forEach { existing ->
+                    lockConfigDao.upsert(
+                        existing.copy(
+                            authMethod = method.name,
+                            pinHash = null,
+                            patternHash = null,
+                            autoLockMinutes = state.appSettings.relockTimeoutMinutes,
+                            isHidden = true
+                        )
+                    )
+                }
+
+            statusMessage.value = "ロック設定を保存し、既存ロックへ反映しました"
             lockSecretDraft.value = ""
+        }
+    }
+
+    fun refreshComicSyncDiscovery() {
+        viewModelScope.launch {
+            syncDiscoveryInProgress.value = true
+            try {
+                val discovered = comicProgressLanSyncManager.discoverDevices()
+                statusMessage.value = if (discovered.isEmpty()) {
+                    "同一ネットワーク上で登録候補端末を検出できませんでした"
+                } else {
+                    "登録候補端末を${discovered.size}台検出しました"
+                }
+            } catch (error: Exception) {
+                statusMessage.value = "端末検出に失敗しました: ${error.message ?: "不明なエラー"}"
+            } finally {
+                syncDiscoveryInProgress.value = false
+            }
+        }
+    }
+
+    fun registerComicSyncDevice(device: ComicSyncDevice) {
+        viewModelScope.launch {
+            comicProgressSyncStore.upsertRegisteredDevice(device)
+            statusMessage.value = "${device.name} を進捗共有端末に登録しました"
+        }
+    }
+
+    fun removeComicSyncDevice(deviceId: String) {
+        viewModelScope.launch {
+            val target = uiState.value.syncSettings.registeredDevices.firstOrNull {
+                it.deviceId == deviceId
+            }
+            comicProgressSyncStore.removeRegisteredDevice(deviceId)
+            statusMessage.value = if (target != null) {
+                "${target.name} の登録を解除しました"
+            } else {
+                "登録端末を解除しました"
+            }
         }
     }
 

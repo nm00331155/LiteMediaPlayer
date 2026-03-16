@@ -12,6 +12,7 @@ import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.data.LockConfigDao
 import com.example.litemediaplayer.data.VideoFolder
 import com.example.litemediaplayer.data.VideoFolderDao
+import com.example.litemediaplayer.lock.LockAuthMethod
 import com.example.litemediaplayer.lock.LockManager
 import com.example.litemediaplayer.lock.LockTargetType
 import com.example.litemediaplayer.settings.AppSettingsStore
@@ -86,6 +87,7 @@ data class PlayerUiState(
     val gestureVolumeZoneStart: Float = 0.7f,
     val fiveTapEnabled: Boolean = true,
     val fiveTapAuthRequired: Boolean = true,
+    val hiddenUnlockMethod: LockAuthMethod = LockAuthMethod.PIN,
     val showHiddenLocked: Boolean = false,
     val errorMessage: String? = null
 )
@@ -184,6 +186,7 @@ class PlayerViewModel @Inject constructor(
             gestureVolumeZoneStart = settings.gestureVolumeZoneStart,
             fiveTapEnabled = settings.fiveTapEnabled,
             fiveTapAuthRequired = settings.fiveTapAuthRequired,
+            hiddenUnlockMethod = LockAuthMethod.fromStoredValue(settings.lockAuthMethod),
             showHiddenLocked = settings.hiddenLockContentVisible,
             errorMessage = selection.errorMessage
         )
@@ -356,6 +359,10 @@ class PlayerViewModel @Inject constructor(
         errorMessage.value = null
     }
 
+    fun showError(message: String) {
+        errorMessage.value = message
+    }
+
     fun setSeekInterval(seconds: Int) {
         viewModelScope.launch {
             appSettingsStore.updateSeekInterval(seconds)
@@ -447,7 +454,7 @@ class PlayerViewModel @Inject constructor(
             val lockEnabled = lockConfig?.isEnabled == true
             val isHidden = lockConfig?.isHidden == true
 
-            if (lockEnabled && isHidden && !showHiddenLocked) {
+            if (lockEnabled && !showHiddenLocked) {
                 return@mapNotNull null
             }
 
@@ -474,7 +481,7 @@ class PlayerViewModel @Inject constructor(
                 videos = cachedVideos,
                 isLocked = isLocked,
                 isLockEnabled = lockEnabled,
-                isHidden = isHidden
+                isHidden = lockEnabled || isHidden
             )
         }
     }

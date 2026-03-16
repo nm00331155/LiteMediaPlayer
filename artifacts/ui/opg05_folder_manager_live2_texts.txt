@@ -1,0 +1,4 @@
+﻿登録済みフォルダ (1 件)
+booktest
+11 冊 | content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fbooktest
+コミックフォルダ管理

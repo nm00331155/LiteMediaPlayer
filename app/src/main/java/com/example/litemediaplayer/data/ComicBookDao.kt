@@ -11,6 +11,9 @@ interface ComicBookDao {
     @Query("SELECT * FROM comic_books ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<ComicBook>>
 
+    @Query("SELECT * FROM comic_books ORDER BY createdAt DESC")
+    suspend fun findAll(): List<ComicBook>
+
     @Query("SELECT * FROM comic_books WHERE id = :bookId LIMIT 1")
     suspend fun findById(bookId: Long): ComicBook?
 

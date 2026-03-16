@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.litemediaplayer.core.AppLogger
 import com.example.litemediaplayer.settings.PlayerRotation
 
 data class FullScreenRestoreState(
@@ -44,9 +45,22 @@ object FullScreenUtil {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        if (playerRotation == PlayerRotation.FORCE_LANDSCAPE) {
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        when (playerRotation) {
+            PlayerRotation.FORCE_LANDSCAPE -> {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            }
+
+            PlayerRotation.FORCE_PORTRAIT -> {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
+
+            PlayerRotation.FOLLOW_GLOBAL -> Unit
         }
+
+        AppLogger.d(
+            "PlayerRotation",
+            "enter rotation=$playerRotation requestedOrientation=${activity.requestedOrientation}"
+        )
 
         return FullScreenRestoreState(
             requestedOrientation = previousOrientation,
@@ -71,5 +85,10 @@ object FullScreenUtil {
         }
 
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        AppLogger.d(
+            "PlayerRotation",
+            "exit restoreRequestedOrientation=${restoreState.requestedOrientation}"
+        )
     }
 }

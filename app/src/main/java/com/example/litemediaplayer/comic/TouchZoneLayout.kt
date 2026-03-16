@@ -7,12 +7,12 @@ enum class TouchZoneLayout(val label: String) {
 
 data class TouchZoneConfig(
     val layout: TouchZoneLayout = TouchZoneLayout.THREE_COLUMN,
-    val leftTap: TouchAction = TouchAction.NONE,
+    val leftTap: TouchAction = TouchAction.NEXT_PAGE,
     val centerTap: TouchAction = TouchAction.TOGGLE_CONTROLS,
-    val rightTap: TouchAction = TouchAction.NONE,
-    val leftLongPress: TouchAction = TouchAction.FIRST_PAGE,
+    val rightTap: TouchAction = TouchAction.PREV_PAGE,
+    val leftLongPress: TouchAction = TouchAction.SKIP_FORWARD,
     val centerLongPress: TouchAction = TouchAction.JUMP_TO_PAGE,
-    val rightLongPress: TouchAction = TouchAction.LAST_PAGE,
+    val rightLongPress: TouchAction = TouchAction.SKIP_BACKWARD,
     val topLeftTap: TouchAction = TouchAction.PREV_PAGE,
     val topCenterTap: TouchAction = TouchAction.TOGGLE_CONTROLS,
     val topRightTap: TouchAction = TouchAction.NEXT_PAGE,

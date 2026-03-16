@@ -3,9 +3,13 @@ package com.example.litemediaplayer.comic
 import android.content.res.Configuration
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,16 +40,23 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -54,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlin.math.abs
 
 @Composable
 fun ComicReaderScreen(
@@ -65,16 +77,71 @@ fun ComicReaderScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val displayTotalPages = maxOf(uiState.totalPageCount, uiState.pages.size)
     var showControls by remember { mutableStateOf(true) }
     var showJumpDialog by remember { mutableStateOf(false) }
     var showNextBookDialog by remember { mutableStateOf(false) }
     var isFullscreen by remember { mutableStateOf(false) }
     var isZoneEditMode by remember { mutableStateOf(false) }
     var editingZone by remember { mutableStateOf<ZoneEditTarget?>(null) }
+    var isCurrentPageZoomed by remember { mutableStateOf(false) }
+    var pendingDoubleTap by remember(uiState.currentBookId, uiState.currentPage) {
+        mutableStateOf<Offset?>(null)
+    }
+    var pageTurnDragOffset by remember(uiState.currentBookId, uiState.currentPage) {
+        mutableFloatStateOf(0f)
+    }
+    var pageTurnSettleTarget by remember(uiState.currentBookId, uiState.currentPage) {
+        mutableFloatStateOf(0f)
+    }
+    var isPageTurnDragging by remember { mutableStateOf(false) }
+    var pendingPageTurnAction by remember(uiState.currentBookId, uiState.currentPage) {
+        mutableStateOf<PageTurnAction?>(null)
+    }
+    var pageTurnWidthPx by remember { mutableIntStateOf(0) }
     val focusRequester = remember { FocusRequester() }
 
     val touchZone = remember(uiState.settings.touchZone, uiState.settings.readingDirection) {
         uiState.settings.touchZone.resolvedForDirection(uiState.settings.readingDirection)
+    }
+    val pages = uiState.pages
+
+    val pageTurnOffset by animateFloatAsState(
+        targetValue = if (isPageTurnDragging) pageTurnDragOffset else pageTurnSettleTarget,
+        animationSpec = if (isPageTurnDragging) snap() else tween(durationMillis = 180),
+        label = "comicPageTurnOffset",
+        finishedListener = { finalValue ->
+            val action = pendingPageTurnAction ?: return@animateFloatAsState
+            if (pageTurnWidthPx > 0 && abs(finalValue) >= pageTurnWidthPx * 0.95f) {
+                pendingPageTurnAction = null
+                pageTurnDragOffset = 0f
+                pageTurnSettleTarget = 0f
+                when (action) {
+                    PageTurnAction.NEXT -> viewModel.nextPage()
+                    PageTurnAction.PREVIOUS -> viewModel.previousPage()
+                }
+            }
+        }
+    )
+
+    fun resolvePageTurnAction(offsetX: Float): PageTurnAction? {
+        if (abs(offsetX) < 0.5f) {
+            return null
+        }
+        val nextPage = when (uiState.settings.readingDirection) {
+            ReadingDirection.RTL -> offsetX < 0f
+            ReadingDirection.LTR -> offsetX > 0f
+        }
+        return if (nextPage) PageTurnAction.NEXT else PageTurnAction.PREVIOUS
+    }
+
+    fun resolvePreviewPage(offsetX: Float): ComicPage? {
+        val action = resolvePageTurnAction(offsetX) ?: return null
+        val index = when (action) {
+            PageTurnAction.NEXT -> uiState.currentPage + 1
+            PageTurnAction.PREVIOUS -> uiState.currentPage - 1
+        }
+        return pages.getOrNull(index)
     }
 
     BackHandler {
@@ -91,18 +158,44 @@ fun ComicReaderScreen(
         viewModel.openBook(bookId)
     }
 
-    LaunchedEffect(uiState.currentBookId, uiState.currentPage, uiState.pages.size) {
+    LaunchedEffect(uiState.currentBookId, uiState.currentPage) {
+        pageTurnDragOffset = 0f
+        pageTurnSettleTarget = 0f
+        isPageTurnDragging = false
+        pendingPageTurnAction = null
+    }
+
+    LaunchedEffect(
+        uiState.currentBookId,
+        uiState.currentPage,
+        uiState.pages.size,
+        uiState.isBookFullyLoaded
+    ) {
         if (
             uiState.currentBookId == bookId &&
+            uiState.isBookFullyLoaded &&
             uiState.pages.isNotEmpty() &&
             uiState.currentPage >= uiState.pages.lastIndex
         ) {
             showNextBookDialog = true
+        } else if (!uiState.isBookFullyLoaded || uiState.currentPage < uiState.pages.lastIndex) {
+            showNextBookDialog = false
         }
     }
 
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+    LaunchedEffect(
+        uiState.currentBookId,
+        uiState.currentPage,
+        showControls,
+        isZoneEditMode,
+        showJumpDialog
+    ) {
+        if (!showJumpDialog) {
+            withFrameNanos { }
+            runCatching {
+                focusRequester.requestFocus()
+            }
+        }
     }
 
     if (uiState.isLoadingBook) {
@@ -147,8 +240,9 @@ fun ComicReaderScreen(
         }
     }
 
-    val pages = uiState.pages
     val currentPage = pages.getOrNull(uiState.currentPage)
+    val previewPage = resolvePreviewPage(pageTurnOffset)
+    val showPageTurnPreview = abs(pageTurnOffset) > 0.5f && previewPage != null
 
     if (showJumpDialog) {
         JumpToPageDialog(
@@ -178,13 +272,15 @@ fun ComicReaderScreen(
         if (!showNextBookDialog) {
             null
         } else {
-            val books = uiState.books
-            val currentIndex = books.indexOfFirst { it.id == uiState.currentBookId }
-            if (currentIndex >= 0 && currentIndex < books.lastIndex) {
-                books[currentIndex + 1]
-            } else {
-                null
-            }
+            val currentBook = uiState.books.firstOrNull { it.id == uiState.currentBookId }
+                ?: return@remember null
+            val booksInSequence = uiState.books
+                .filter { it.folderId == currentBook.folderId }
+                .ifEmpty { uiState.books }
+                .sortedWith(comicBookNaturalComparator)
+
+            val currentIndex = booksInSequence.indexOfFirst { it.id == currentBook.id }
+            booksInSequence.getOrNull(currentIndex + 1)
         }
     }
 
@@ -196,6 +292,7 @@ fun ComicReaderScreen(
 
     if (
         showNextBookDialog &&
+        uiState.isBookFullyLoaded &&
         uiState.pages.isNotEmpty() &&
         uiState.currentPage >= uiState.pages.lastIndex &&
         nextBook != null
@@ -203,7 +300,7 @@ fun ComicReaderScreen(
         AlertDialog(
             onDismissRequest = { showNextBookDialog = false },
             title = { Text("次の漫画") },
-            text = { Text("${nextBook.title}") },
+            text = { Text(nextBook.title) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -228,25 +325,25 @@ fun ComicReaderScreen(
             .focusRequester(focusRequester)
             .focusable()
             .onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) {
+                val keyCode = event.nativeKeyEvent.keyCode
+                if (
+                    keyCode != KeyEvent.KEYCODE_VOLUME_UP &&
+                    keyCode != KeyEvent.KEYCODE_VOLUME_DOWN
+                ) {
                     return@onPreviewKeyEvent false
                 }
+
                 if (isZoneEditMode) {
                     return@onPreviewKeyEvent true
                 }
-                when (event.nativeKeyEvent.keyCode) {
-                    KeyEvent.KEYCODE_VOLUME_UP -> {
-                        executeAction(touchZone.volumeUpAction)
-                        true
-                    }
 
-                    KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                        executeAction(touchZone.volumeDownAction)
-                        true
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                    when (keyCode) {
+                        KeyEvent.KEYCODE_VOLUME_UP -> executeAction(touchZone.volumeUpAction)
+                        KeyEvent.KEYCODE_VOLUME_DOWN -> executeAction(touchZone.volumeDownAction)
                     }
-
-                    else -> false
                 }
+                true
             }
             .background(Color(uiState.settings.backgroundColorArgb))
     ) {
@@ -272,10 +369,17 @@ fun ComicReaderScreen(
                         Text("戻る")
                     }
                     Text(
-                        text = "${uiState.currentPage + 1} / ${uiState.pages.size}",
+                        text = "${uiState.currentPage + 1} / $displayTotalPages",
                         style = MaterialTheme.typography.bodyLarge,
                         color = Color.White
                     )
+                    if (!uiState.isBookFullyLoaded) {
+                        Text(
+                            text = "残りを読み込み中",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.75f)
+                        )
+                    }
                     Spacer(modifier = Modifier.weight(1f))
                     IconButton(
                         onClick = { isZoneEditMode = !isZoneEditMode }
@@ -328,14 +432,133 @@ fun ComicReaderScreen(
                     if (currentPage == null) {
                         EmptyReader()
                     } else {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            PageRenderer(
-                                model = currentPage.model,
-                                maxZoom = uiState.settings.zoomMax,
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .onSizeChanged { pageTurnWidthPx = it.width }
+                                .pointerInput(
+                                    uiState.currentBookId,
+                                    uiState.currentPage,
+                                    uiState.settings.readingDirection,
+                                    isCurrentPageZoomed,
+                                    pendingPageTurnAction
+                                ) {
+                                    if (isCurrentPageZoomed || pendingPageTurnAction != null) {
+                                        return@pointerInput
+                                    }
+
+                                    var accumulatedDragX = 0f
+                                    val swipeThreshold = size.width * 0.12f
+                                    detectHorizontalDragGestures(
+                                        onDragStart = {
+                                            accumulatedDragX = pageTurnOffset
+                                            isPageTurnDragging = true
+                                            pendingPageTurnAction = null
+                                        },
+                                        onHorizontalDrag = { change, dragAmount ->
+                                            val candidate = (accumulatedDragX + dragAmount)
+                                                .coerceIn(-size.width.toFloat(), size.width.toFloat())
+                                            accumulatedDragX = if (resolvePreviewPage(candidate) != null) {
+                                                candidate
+                                            } else {
+                                                candidate * 0.2f
+                                            }
+                                            pageTurnDragOffset = accumulatedDragX
+                                            change.consume()
+                                        },
+                                        onDragEnd = {
+                                            val dragX = pageTurnDragOffset
+                                            val isSwipe = abs(dragX) >= swipeThreshold &&
+                                                resolvePreviewPage(dragX) != null
+                                            accumulatedDragX = 0f
+                                            isPageTurnDragging = false
+                                            if (isSwipe) {
+                                                pendingPageTurnAction = resolvePageTurnAction(dragX)
+                                                pageTurnSettleTarget = if (dragX < 0f) {
+                                                    -size.width.toFloat()
+                                                } else {
+                                                    size.width.toFloat()
+                                                }
+                                            } else {
+                                                pendingPageTurnAction = null
+                                                pageTurnSettleTarget = 0f
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            accumulatedDragX = 0f
+                                            isPageTurnDragging = false
+                                            pendingPageTurnAction = null
+                                            pageTurnSettleTarget = 0f
+                                        }
+                                    )
+                                }
+                        ) {
+                            if (showPageTurnPreview) {
+                                PageRenderer(
+                                    model = previewPage!!.model,
+                                    maxZoom = uiState.settings.zoomMax,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(uiState.settings.pagePaddingDp.dp)
+                                )
+                            }
+
+                            Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(uiState.settings.pagePaddingDp.dp)
-                            )
+                                    .graphicsLayer {
+                                        translationX = pageTurnOffset
+                                        shadowElevation = if (showPageTurnPreview) 24f else 0f
+                                        scaleY = if (showPageTurnPreview) 0.995f else 1f
+                                    }
+                            ) {
+                                PageRenderer(
+                                    model = currentPage.model,
+                                    maxZoom = uiState.settings.zoomMax,
+                                    onZoomStateChange = { zoomed ->
+                                        isCurrentPageZoomed = zoomed
+                                    },
+                                    doubleTapRequest = pendingDoubleTap,
+                                    onDoubleTapRequestConsumed = {
+                                        pendingDoubleTap = null
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(uiState.settings.pagePaddingDp.dp)
+                                )
+
+                                if (showPageTurnPreview) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(
+                                                if (pageTurnOffset < 0f) {
+                                                    Alignment.CenterEnd
+                                                } else {
+                                                    Alignment.CenterStart
+                                                }
+                                            )
+                                            .fillMaxHeight()
+                                            .fillMaxWidth(0.03f)
+                                            .background(
+                                                brush = if (pageTurnOffset < 0f) {
+                                                    Brush.horizontalGradient(
+                                                        listOf(
+                                                            Color.Transparent,
+                                                            Color.Black.copy(alpha = 0.28f)
+                                                        )
+                                                    )
+                                                } else {
+                                                    Brush.horizontalGradient(
+                                                        listOf(
+                                                            Color.Black.copy(alpha = 0.28f),
+                                                            Color.Transparent
+                                                        )
+                                                    )
+                                                }
+                                            )
+                                    )
+                                }
+                            }
 
                             if (isZoneEditMode) {
                                 ZoneEditOverlay(
@@ -344,7 +567,7 @@ fun ComicReaderScreen(
                                     onZoneClick = { target -> editingZone = target },
                                     modifier = Modifier.fillMaxSize()
                                 )
-                            } else {
+                            } else if (!isCurrentPageZoomed && !showPageTurnPreview) {
                                 ComicTouchZoneOverlay(
                                     layout = touchZone.layout,
                                     longPressMs = touchZone.longPressMs.toLong(),
@@ -353,6 +576,9 @@ fun ComicReaderScreen(
                                     },
                                     onZoneLongPress = { zone ->
                                         executeAction(resolveLongPressAction(touchZone, zone))
+                                    },
+                                    onDoubleTap = { tapOffset ->
+                                        pendingDoubleTap = tapOffset
                                     },
                                     modifier = Modifier.fillMaxSize()
                                 )
@@ -792,71 +1018,64 @@ private fun ComicTouchZoneOverlay(
     longPressMs: Long,
     onZoneTap: (ZoneId) -> Unit,
     onZoneLongPress: (ZoneId) -> Unit,
+    onDoubleTap: (Offset) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    when (layout) {
-        TouchZoneLayout.THREE_COLUMN -> {
-            Row(modifier = modifier) {
-                listOf(ZoneId.LEFT, ZoneId.CENTER, ZoneId.RIGHT).forEach { zone ->
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .pointerInput(zone, longPressMs) {
-                                detectTapGestures(
-                                    onTap = { onZoneTap(zone) },
-                                    onLongPress = { onZoneLongPress(zone) }
-                                )
-                            }
+    Box(
+        modifier = modifier.pointerInput(layout, longPressMs) {
+            detectTapGestures(
+                onTap = { tapOffset ->
+                    onZoneTap(resolveZoneFromOffset(layout, size.width.toFloat(), size.height.toFloat(), tapOffset))
+                },
+                onLongPress = { tapOffset ->
+                    onZoneLongPress(
+                        resolveZoneFromOffset(
+                            layout,
+                            size.width.toFloat(),
+                            size.height.toFloat(),
+                            tapOffset
+                        )
                     )
-                }
-            }
+                },
+                onDoubleTap = onDoubleTap
+            )
+        }
+    )
+}
+
+private fun resolveZoneFromOffset(
+    layout: TouchZoneLayout,
+    width: Float,
+    height: Float,
+    tapOffset: Offset
+): ZoneId {
+    val safeWidth = width.coerceAtLeast(1f)
+    val safeHeight = height.coerceAtLeast(1f)
+    val x = tapOffset.x.coerceIn(0f, safeWidth - 1f)
+    val y = tapOffset.y.coerceIn(0f, safeHeight - 1f)
+
+    return when (layout) {
+        TouchZoneLayout.THREE_COLUMN -> when {
+            x < safeWidth / 3f -> ZoneId.LEFT
+            x < (safeWidth * 2f) / 3f -> ZoneId.CENTER
+            else -> ZoneId.RIGHT
         }
 
         TouchZoneLayout.SIX_ZONE -> {
-            Column(modifier = modifier) {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    listOf(ZoneId.TOP_LEFT, ZoneId.TOP_CENTER, ZoneId.TOP_RIGHT).forEach { zone ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .pointerInput(zone, longPressMs) {
-                                    detectTapGestures(
-                                        onTap = { onZoneTap(zone) },
-                                        onLongPress = { onZoneLongPress(zone) }
-                                    )
-                                }
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier
-                        .weight(2f)
-                        .fillMaxWidth()
-                ) {
-                    listOf(
-                        ZoneId.BOTTOM_LEFT,
-                        ZoneId.BOTTOM_CENTER,
-                        ZoneId.BOTTOM_RIGHT
-                    ).forEach { zone ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .pointerInput(zone, longPressMs) {
-                                    detectTapGestures(
-                                        onTap = { onZoneTap(zone) },
-                                        onLongPress = { onZoneLongPress(zone) }
-                                    )
-                                }
-                        )
-                    }
-                }
+            val zoneIndex = when {
+                x < safeWidth / 3f -> 0
+                x < (safeWidth * 2f) / 3f -> 1
+                else -> 2
+            }
+            val isTopRow = y < safeHeight / 3f
+
+            when {
+                isTopRow && zoneIndex == 0 -> ZoneId.TOP_LEFT
+                isTopRow && zoneIndex == 1 -> ZoneId.TOP_CENTER
+                isTopRow -> ZoneId.TOP_RIGHT
+                zoneIndex == 0 -> ZoneId.BOTTOM_LEFT
+                zoneIndex == 1 -> ZoneId.BOTTOM_CENTER
+                else -> ZoneId.BOTTOM_RIGHT
             }
         }
     }
@@ -869,7 +1088,7 @@ private fun JumpToPageDialog(
     onJump: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var text by remember { mutableStateOf(currentPage.toString()) }
+    var text by remember(currentPage, totalPages) { mutableStateOf(currentPage.toString()) }
     val parsed = text.toIntOrNull()
     val isValid = totalPages > 0 && parsed != null && parsed in 1..totalPages
 
@@ -879,6 +1098,25 @@ private fun JumpToPageDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("現在: $currentPage / $totalPages ページ")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { text = "1" },
+                        modifier = Modifier.weight(1f),
+                        enabled = totalPages > 0
+                    ) {
+                        Text("最初")
+                    }
+                    Button(
+                        onClick = { text = totalPages.toString() },
+                        modifier = Modifier.weight(1f),
+                        enabled = totalPages > 0
+                    ) {
+                        Text("最後")
+                    }
+                }
                 OutlinedTextField(
                     value = text,
                     onValueChange = { input ->
@@ -908,6 +1146,11 @@ private fun JumpToPageDialog(
             }
         }
     )
+}
+
+private enum class PageTurnAction {
+    NEXT,
+    PREVIOUS
 }
 
 @Composable

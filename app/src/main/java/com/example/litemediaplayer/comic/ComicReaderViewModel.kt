@@ -6,6 +6,8 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.DocumentsContract
+import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
@@ -18,6 +20,7 @@ import com.example.litemediaplayer.data.ComicFolder
 import com.example.litemediaplayer.data.ComicFolderDao
 import com.example.litemediaplayer.data.LockConfig
 import com.example.litemediaplayer.data.LockConfigDao
+import com.example.litemediaplayer.lock.LockAuthMethod
 import com.example.litemediaplayer.lock.LockManager
 import com.example.litemediaplayer.lock.LockTargetType
 import com.example.litemediaplayer.settings.AppSettingsStore
@@ -25,21 +28,33 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.zip.ZipInputStream
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 private val SUPPORTED_IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
 private val SUPPORTED_ARCHIVE_EXTENSIONS = setOf("zip", "cbz", "cbr", "rar")
+private const val COMIC_PROGRESS_EXPORT_PREFIX = "comic_progress_sync_"
+private const val INITIAL_PAGE_PREFETCH_COUNT = 6
+private const val BACKGROUND_PAGE_SOURCE_BATCH_SIZE = 12
 
 data class ComicPage(
     val index: Int,
@@ -67,12 +82,37 @@ data class ComicReaderUiState(
     val currentBookId: Long? = null,
     val pages: List<ComicPage> = emptyList(),
     val currentPage: Int = 0,
+    val totalPageCount: Int = 0,
     val isLoadingBook: Boolean = false,
+    val isBookFullyLoaded: Boolean = true,
     val settings: ComicReaderSettings = ComicReaderSettings(),
     val fiveTapEnabled: Boolean = true,
     val fiveTapAuthRequired: Boolean = true,
+    val hiddenUnlockMethod: LockAuthMethod = LockAuthMethod.PIN,
     val showHiddenLocked: Boolean = false,
-    val errorMessage: String? = null
+    val registeredSyncDeviceCount: Int = 0,
+    val errorMessage: String? = null,
+    val statusMessage: String? = null
+)
+
+private data class ComicPageSource(
+    val sourceName: String,
+    val directUri: Uri,
+    val signature: ContentCacheSignature,
+    val openStream: () -> java.io.InputStream?
+)
+
+private data class ProgressivePageLoadResult(
+    val initialPages: List<ComicPage>,
+    val remainingSources: List<ComicPageSource>,
+    val totalPageHint: Int
+)
+
+private data class ComicFolderRegistrationTarget(
+    val treeUri: Uri,
+    val displayName: String,
+    val directArchives: List<DocumentFile>,
+    val directImages: List<DocumentFile>
 )
 
 @HiltViewModel
@@ -80,6 +120,8 @@ class ComicReaderViewModel @Inject constructor(
     private val comicFolderDao: ComicFolderDao,
     private val comicBookDao: ComicBookDao,
     private val comicSettings: ComicSettings,
+    private val comicProgressSyncStore: ComicProgressSyncStore,
+    private val comicProgressLanSyncManager: ComicProgressLanSyncManager,
     private val pageProcessor: PageProcessor,
     private val lockConfigDao: LockConfigDao,
     private val lockManager: LockManager,
@@ -88,6 +130,8 @@ class ComicReaderViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ComicReaderUiState())
     val uiState: StateFlow<ComicReaderUiState> = _uiState.asStateFlow()
+    private var backgroundPageLoadJob: Job? = null
+    private var pageLoadGeneration: Long = 0L
 
     init {
         viewModelScope.launch {
@@ -98,7 +142,7 @@ class ComicReaderViewModel @Inject constructor(
         _uiState.update { state ->
             state.copy(
                 showHiddenLocked = false,
-                folders = state.allFolders.filterNot { it.isLockEnabled && it.isHidden }
+                folders = state.allFolders.filterNot { it.isLockEnabled }
             )
         }
 
@@ -113,8 +157,7 @@ class ComicReaderViewModel @Inject constructor(
                         config.targetId == book.id && config.isEnabled
                     } ?: return@filter true
 
-                    val locked = lockManager.isLocked(LockTargetType.COMIC_SHELF, book.id)
-                    !(lockConfig.isHidden && locked && !showHiddenLocked)
+                    showHiddenLocked || !lockConfig.isEnabled
                 }
             }.collect { books ->
                 _uiState.update { it.copy(books = books) }
@@ -133,11 +176,11 @@ class ComicReaderViewModel @Inject constructor(
                     ComicFolderUi(
                         folder = folder,
                         isLockEnabled = lockConfig?.isEnabled == true,
-                        isHidden = lockConfig?.isHidden == true
+                        isHidden = lockConfig?.isEnabled == true || lockConfig?.isHidden == true
                     )
                 }
                 val visibleFolders = folderUis.filterNot {
-                    it.isLockEnabled && it.isHidden && !showHidden
+                    it.isLockEnabled && !showHidden
                 }
                 _uiState.update { state ->
                     val selected = state.selectedFolderId
@@ -168,8 +211,18 @@ class ComicReaderViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         fiveTapEnabled = appSettings.fiveTapEnabled,
-                        fiveTapAuthRequired = appSettings.fiveTapAuthRequired
+                        fiveTapAuthRequired = appSettings.fiveTapAuthRequired,
+                        hiddenUnlockMethod = LockAuthMethod.fromStoredValue(
+                            appSettings.lockAuthMethod
+                        )
                     )
+                }
+            }
+        }
+        viewModelScope.launch {
+            comicProgressSyncStore.settingsFlow.collect { syncSettings ->
+                _uiState.update {
+                    it.copy(registeredSyncDeviceCount = syncSettings.registeredDevices.size)
                 }
             }
         }
@@ -186,140 +239,241 @@ class ComicReaderViewModel @Inject constructor(
                 AppLogger.w("ComicReader", "takePersistableUriPermission failed", e)
             }
 
-            val root = DocumentFile.fromTreeUri(context, folderUri)
+            val normalizedRootUri = normalizeFolderTreeUri(folderUri) ?: folderUri
+            val root = resolveFolderDocument(normalizedRootUri)
             if (root == null || !root.canRead()) {
                 _uiState.update { it.copy(errorMessage = "このフォルダは読み取れません") }
                 return@launch
             }
 
-            val treeUriString = folderUri.toString()
-            val existingFolder = comicFolderDao.findByTreeUri(treeUriString)
-            if (existingFolder != null) {
-                _uiState.update { it.copy(errorMessage = "このフォルダは既に登録されています") }
-                return@launch
-            }
+            val targets = mutableListOf<ComicFolderRegistrationTarget>()
+            collectComicFolderRegistrationTargets(root, targets)
 
-            val folderName = root.name ?: "コミックフォルダ"
-            val folderId = comicFolderDao.upsert(
-                ComicFolder(
-                    displayName = folderName,
-                    treeUri = treeUriString
-                )
-            )
-
-            val archives = mutableListOf<DocumentFile>()
-            val imageFolders = mutableListOf<DocumentFile>()
-            scanFolderRecursively(root, archives, imageFolders)
-
-            if (archives.isEmpty() && imageFolders.isEmpty()) {
-                comicFolderDao.deleteById(folderId)
+            if (targets.isEmpty()) {
                 _uiState.update { it.copy(errorMessage = "アーカイブや画像が見つかりません") }
                 return@launch
             }
 
-            var registeredCount = 0
-            var firstCover: String? = null
-
-            for (archive in archives) {
-                val uriString = archive.uri.toString()
-                if (comicBookDao.findBySourceUri(uriString) != null) {
-                    continue
+            val rootTreeUriString = normalizedRootUri.toString()
+            comicFolderDao.findByTreeUri(rootTreeUriString)
+                ?.takeIf { folder ->
+                    targets.none { target -> target.treeUri.toString() == folder.treeUri }
                 }
-                val title = archive.name ?: "comic"
-                val coverUri = try {
-                    extractFirstImageFromArchive(archive.uri)
-                } catch (e: Exception) {
-                    AppLogger.w("ComicReader", "Cover extract failed: $title", e)
-                    null
-                }
-                if (firstCover == null) {
-                    firstCover = coverUri
-                }
-                comicBookDao.upsert(
-                    ComicBook(
-                        title = title,
-                        sourceUri = uriString,
-                        sourceType = "ARCHIVE",
-                        coverUri = coverUri,
-                        totalPages = 0,
-                        folderId = folderId
+                ?.let { legacyFolder ->
+                    lockConfigDao.findByTarget(LockTargetType.COMIC_FOLDER.name, legacyFolder.id)
+                        ?.let { lockConfigDao.delete(it) }
+                    comicBookDao.deleteByFolder(legacyFolder.id)
+                    comicFolderDao.deleteById(legacyFolder.id)
+                    if (_uiState.value.selectedFolderId == legacyFolder.id) {
+                        _uiState.update { it.copy(selectedFolderId = null) }
+                    }
+                    AppLogger.i(
+                        "ComicReader",
+                        "Removed legacy flattened comic folder: $rootTreeUriString"
                     )
-                )
-                registeredCount++
-            }
+                }
 
-            for (folder in imageFolders) {
-                val uriString = folder.uri.toString()
-                if (comicBookDao.findBySourceUri(uriString) != null) {
-                    continue
-                }
-                val title = folder.name ?: "comic"
-                val images = folder.listFiles()
-                    .filter { it.isFile && it.name.hasImageExtension() }
-                val coverUri = images
-                    .minByOrNull { it.name?.lowercase(Locale.getDefault()) ?: "" }
-                    ?.uri
-                    ?.toString()
-                if (firstCover == null) {
-                    firstCover = coverUri
-                }
-                comicBookDao.upsert(
-                    ComicBook(
-                        title = title,
-                        sourceUri = uriString,
-                        sourceType = "FOLDER",
-                        coverUri = coverUri,
-                        totalPages = images.size,
-                        folderId = folderId
+            var addedFolderCount = 0
+            var refreshedFolderCount = 0
+            var changedBookCount = 0
+            var removedBookCount = 0
+            val allowedSourceUrisByFolderId = mutableMapOf<Long, MutableSet<String>>()
+
+            for (target in targets) {
+                val targetTreeUriString = target.treeUri.toString()
+                val existingFolder = comicFolderDao.findByTreeUri(targetTreeUriString)
+                val folderId = if (existingFolder != null) {
+                    refreshedFolderCount++
+                    comicFolderDao.upsert(existingFolder.copy(displayName = target.displayName))
+                    existingFolder.id
+                } else {
+                    addedFolderCount++
+                    comicFolderDao.upsert(
+                        ComicFolder(
+                            displayName = target.displayName,
+                            treeUri = targetTreeUriString
+                        )
                     )
+                }
+
+                val allowedSources = allowedSourceUrisByFolderId
+                    .getOrPut(folderId) { mutableSetOf() }
+
+                for (archive in target.directArchives) {
+                    val archiveSourceUri = archive.uri.toString()
+                    allowedSources += archiveSourceUri
+
+                    val existingBook = comicBookDao.findBySourceUri(archiveSourceUri)
+                    val title = archive.name ?: existingBook?.title ?: "comic"
+                    val coverUri = existingBook?.coverUri ?: try {
+                        extractFirstImageFromArchive(archive.uri)
+                    } catch (e: Exception) {
+                        AppLogger.w("ComicReader", "Cover extract failed: $title", e)
+                        null
+                    }
+
+                    if (existingBook == null || existingBook.folderId != folderId) {
+                        changedBookCount++
+                    }
+
+                    comicBookDao.upsert(
+                        existingBook?.copy(
+                            title = title,
+                            sourceType = "ARCHIVE",
+                            coverUri = coverUri ?: existingBook.coverUri,
+                            folderId = folderId
+                        ) ?: ComicBook(
+                            title = title,
+                            sourceUri = archiveSourceUri,
+                            sourceType = "ARCHIVE",
+                            coverUri = coverUri,
+                            totalPages = 0,
+                            folderId = folderId
+                        )
+                    )
+                }
+
+                if (target.directImages.isNotEmpty()) {
+                    val folderSourceUri = targetTreeUriString
+                    allowedSources += folderSourceUri
+
+                    val coverUri = target.directImages
+                        .minWithOrNull { left, right ->
+                            compareNaturally(left.name.orEmpty(), right.name.orEmpty())
+                        }
+                        ?.uri
+                        ?.toString()
+                    val existingBook = comicBookDao.findBySourceUri(folderSourceUri)
+
+                    if (existingBook == null || existingBook.folderId != folderId) {
+                        changedBookCount++
+                    }
+
+                    comicBookDao.upsert(
+                        existingBook?.copy(
+                            title = target.displayName,
+                            sourceType = "FOLDER",
+                            coverUri = coverUri ?: existingBook.coverUri,
+                            totalPages = target.directImages.size,
+                            folderId = folderId
+                        ) ?: ComicBook(
+                            title = target.displayName,
+                            sourceUri = folderSourceUri,
+                            sourceType = "FOLDER",
+                            coverUri = coverUri,
+                            totalPages = target.directImages.size,
+                            folderId = folderId
+                        )
+                    )
+                }
+
+                AppLogger.i(
+                    "ComicReader",
+                    "Prepared comic folder target: ${target.displayName}, " +
+                        "archives=${target.directArchives.size}, images=${target.directImages.size}, " +
+                        "treeUri=$targetTreeUriString"
                 )
-                registeredCount++
             }
 
-            comicFolderDao.updateMeta(folderId, firstCover, registeredCount)
+            for ((folderId, allowedSources) in allowedSourceUrisByFolderId) {
+                comicBookDao.findByFolder(folderId).forEach { book ->
+                    if (book.sourceUri !in allowedSources) {
+                        comicBookDao.deleteById(book.id)
+                        removedBookCount++
+                    }
+                }
 
-            _uiState.update { it.copy(selectedFolderId = folderId) }
-
-            if (registeredCount == 0) {
-                comicFolderDao.deleteById(folderId)
-                _uiState.update { it.copy(errorMessage = "新しい書籍はありませんでした（全て登録済み）") }
-            } else {
-                AppLogger.i("ComicReader", "Registered $registeredCount books from folder")
+                val booksInFolder = comicBookDao.findByFolder(folderId)
+                val coverUri = booksInFolder.firstOrNull { !it.coverUri.isNullOrBlank() }?.coverUri
+                comicFolderDao.updateMeta(folderId, coverUri, booksInFolder.size)
             }
+
+            val statusMessage = buildString {
+                if (addedFolderCount > 0) {
+                    append("${addedFolderCount}件のコミックフォルダを登録しました")
+                }
+                if (refreshedFolderCount > 0) {
+                    if (isNotEmpty()) append(" / ")
+                    append("${refreshedFolderCount}件を再走査しました")
+                }
+                if (changedBookCount > 0) {
+                    if (isNotEmpty()) append(" / ")
+                    append("${changedBookCount}件の書籍を追加・再配置しました")
+                }
+                if (removedBookCount > 0) {
+                    if (isNotEmpty()) append(" / ")
+                    append("${removedBookCount}件の古い書籍を整理しました")
+                }
+                if (isEmpty()) {
+                    append("登録済みフォルダを確認しました（追加の変更はありません）")
+                }
+            }
+
+            _uiState.update {
+                it.copy(
+                    selectedFolderId = null,
+                    errorMessage = null,
+                    statusMessage = statusMessage
+                )
+            }
+
+            AppLogger.i(
+                "ComicReader",
+                "Comic folder registration finished: targets=${targets.size}, " +
+                    "addedFolders=$addedFolderCount, refreshedFolders=$refreshedFolderCount, " +
+                    "changedBooks=$changedBookCount, removedBooks=$removedBookCount"
+            )
         }
     }
 
-    private fun scanFolderRecursively(
+    private fun collectComicFolderRegistrationTargets(
         folder: DocumentFile,
-        archives: MutableList<DocumentFile>,
-        imageFolders: MutableList<DocumentFile>
+        targets: MutableList<ComicFolderRegistrationTarget>
     ) {
         val children = folder.listFiles()
-        var hasImages = false
+            .sortedWith { left, right ->
+                compareNaturally(left.name.orEmpty(), right.name.orEmpty())
+            }
+        val directArchives = children.filter { child ->
+            child.isFile && child.name.hasArchiveExtension()
+        }
+        val directImages = children.filter { child ->
+            child.isFile && child.name.hasImageExtension()
+        }
 
-        for (child in children) {
-            if (child.isDirectory) {
-                scanFolderRecursively(child, archives, imageFolders)
-            } else if (child.isFile) {
-                val name = child.name ?: continue
-                val ext = name.substringAfterLast('.', "").lowercase(Locale.getDefault())
-                when {
-                    ext in SUPPORTED_ARCHIVE_EXTENSIONS -> archives.add(child)
-                    ext in SUPPORTED_IMAGE_EXTENSIONS -> hasImages = true
-                }
+        if (directArchives.isNotEmpty() || directImages.isNotEmpty()) {
+            val treeUri = normalizeFolderTreeUri(folder.uri)
+            if (treeUri != null) {
+                targets += ComicFolderRegistrationTarget(
+                    treeUri = treeUri,
+                    displayName = folder.name ?: "コミックフォルダ",
+                    directArchives = directArchives,
+                    directImages = directImages
+                )
             }
         }
 
-        // このフォルダ自体に画像ファイルがあり、かつアーカイブが無い場合は画像フォルダとして登録
-        if (hasImages) {
-            val hasArchivesInThisFolder = children.any { child ->
-                child.isFile && child.name?.substringAfterLast('.', "")
-                    ?.lowercase(Locale.getDefault()) in SUPPORTED_ARCHIVE_EXTENSIONS
-            }
-            if (!hasArchivesInThisFolder) {
-                imageFolders.add(folder)
-            }
+        children.filter { it.isDirectory }.forEach { child ->
+            collectComicFolderRegistrationTargets(child, targets)
         }
+    }
+
+    private fun normalizeFolderTreeUri(uri: Uri): Uri? {
+        val authority = uri.authority ?: return null
+        val documentId = runCatching {
+            DocumentsContract.getDocumentId(uri)
+        }.getOrElse {
+            runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
+        } ?: return null
+
+        return runCatching {
+            DocumentsContract.buildTreeDocumentUri(authority, documentId)
+        }.getOrNull()
+    }
+
+    private fun resolveFolderDocument(uri: Uri): DocumentFile? {
+        val normalizedUri = normalizeFolderTreeUri(uri) ?: uri
+        return DocumentFile.fromTreeUri(context, normalizedUri)
     }
 
     fun registerComicArchive(fileUri: Uri, resolver: ContentResolver) {
@@ -331,8 +485,20 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     fun openBook(bookId: Long) {
+        backgroundPageLoadJob?.cancel()
+        val loadGeneration = ++pageLoadGeneration
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingBook = true) }
+            _uiState.update {
+                it.copy(
+                    currentBookId = null,
+                    pages = emptyList(),
+                    currentPage = 0,
+                    totalPageCount = 0,
+                    isLoadingBook = true,
+                    isBookFullyLoaded = false,
+                    errorMessage = null
+                )
+            }
             try {
                 val book = withContext(Dispatchers.IO) {
                     comicBookDao.findById(bookId)
@@ -348,38 +514,97 @@ class ComicReaderViewModel @Inject constructor(
                 }
 
                 val settings = _uiState.value.settings
-                val pages = withContext(Dispatchers.IO) {
-                    when (book.sourceType) {
-                        "FOLDER" -> loadFolderPages(book.sourceUri, settings)
-                        "ARCHIVE" -> loadArchivePages(book.sourceUri, settings)
-                        else -> emptyList()
+                if (shouldPreprocessPages(settings)) {
+                    val progressiveResult = withContext(Dispatchers.IO) {
+                        openBookProgressively(book = book, settings = settings)
                     }
-                }
 
-                if (pages.isEmpty()) {
-                    _uiState.update { it.copy(errorMessage = "ページが見つかりません") }
-                    return@launch
-                }
+                    if (loadGeneration != pageLoadGeneration) {
+                        return@launch
+                    }
 
-                val initialPage = book.lastReadPage.coerceIn(0, pages.lastIndex)
-                _uiState.update {
-                    it.copy(
-                        currentBookId = bookId,
-                        pages = pages,
-                        currentPage = initialPage,
-                        errorMessage = null
+                    if (progressiveResult.initialPages.isEmpty()) {
+                        _uiState.update { it.copy(errorMessage = "ページが見つかりません") }
+                        return@launch
+                    }
+
+                    val initialPage = book.lastReadPage.coerceIn(
+                        0,
+                        progressiveResult.initialPages.lastIndex
                     )
-                }
+                    _uiState.update {
+                        it.copy(
+                            currentBookId = bookId,
+                            pages = progressiveResult.initialPages,
+                            currentPage = initialPage,
+                            totalPageCount = progressiveResult.totalPageHint,
+                            isBookFullyLoaded = progressiveResult.remainingSources.isEmpty(),
+                            errorMessage = null
+                        )
+                    }
 
-                saveProgress(bookId = bookId, currentPage = initialPage, totalPages = pages.size)
+                    saveProgress(
+                        bookId = bookId,
+                        currentPage = initialPage,
+                        totalPages = progressiveResult.totalPageHint
+                    )
+
+                    if (progressiveResult.remainingSources.isNotEmpty()) {
+                        startBackgroundPageLoad(
+                            bookId = bookId,
+                            loadGeneration = loadGeneration,
+                            settings = settings,
+                            remainingSources = progressiveResult.remainingSources,
+                            startingPageIndex = progressiveResult.initialPages.size,
+                            totalPageHint = progressiveResult.totalPageHint
+                        )
+                    }
+                } else {
+                    val pages = withContext(Dispatchers.IO) {
+                        when (book.sourceType) {
+                            "FOLDER" -> loadFolderPages(book.sourceUri, settings)
+                            "ARCHIVE" -> loadArchivePages(book.sourceUri, settings)
+                            else -> emptyList()
+                        }
+                    }
+
+                    if (loadGeneration != pageLoadGeneration) {
+                        return@launch
+                    }
+
+                    if (pages.isEmpty()) {
+                        _uiState.update { it.copy(errorMessage = "ページが見つかりません") }
+                        return@launch
+                    }
+
+                    val initialPage = book.lastReadPage.coerceIn(0, pages.lastIndex)
+                    _uiState.update {
+                        it.copy(
+                            currentBookId = bookId,
+                            pages = pages,
+                            currentPage = initialPage,
+                            totalPageCount = pages.size,
+                            isBookFullyLoaded = true,
+                            errorMessage = null
+                        )
+                    }
+
+                    saveProgress(bookId = bookId, currentPage = initialPage, totalPages = pages.size)
+                }
             } catch (_: OutOfMemoryError) {
                 AppLogger.e("ComicReader", "openBook OOM: $bookId")
-                _uiState.update { it.copy(errorMessage = "メモリ不足です。画像サイズが大きすぎます") }
+                if (loadGeneration == pageLoadGeneration) {
+                    _uiState.update { it.copy(errorMessage = "メモリ不足です。画像サイズが大きすぎます") }
+                }
             } catch (e: Exception) {
                 AppLogger.e("ComicReader", "openBook failed", e)
-                _uiState.update { it.copy(errorMessage = "読み込みエラー: ${e.message}") }
+                if (loadGeneration == pageLoadGeneration) {
+                    _uiState.update { it.copy(errorMessage = "読み込みエラー: ${e.message}") }
+                }
             } finally {
-                _uiState.update { it.copy(isLoadingBook = false) }
+                if (loadGeneration == pageLoadGeneration) {
+                    _uiState.update { it.copy(isLoadingBook = false) }
+                }
             }
         }
     }
@@ -395,7 +620,7 @@ class ComicReaderViewModel @Inject constructor(
         saveProgress(
             bookId = state.currentBookId ?: return,
             currentPage = nextIndex,
-            totalPages = state.pages.size
+            totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
     }
 
@@ -410,7 +635,7 @@ class ComicReaderViewModel @Inject constructor(
         saveProgress(
             bookId = state.currentBookId ?: return,
             currentPage = previousIndex,
-            totalPages = state.pages.size
+            totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
     }
 
@@ -425,7 +650,7 @@ class ComicReaderViewModel @Inject constructor(
         saveProgress(
             bookId = state.currentBookId ?: return,
             currentPage = safeIndex,
-            totalPages = state.pages.size
+            totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
     }
 
@@ -441,7 +666,7 @@ class ComicReaderViewModel @Inject constructor(
         saveProgress(
             bookId = state.currentBookId ?: return,
             currentPage = target,
-            totalPages = state.pages.size
+            totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
     }
 
@@ -457,7 +682,7 @@ class ComicReaderViewModel @Inject constructor(
         saveProgress(
             bookId = state.currentBookId ?: return,
             currentPage = target,
-            totalPages = state.pages.size
+            totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
     }
 
@@ -474,13 +699,171 @@ class ComicReaderViewModel @Inject constructor(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun showError(message: String) {
+        _uiState.update { it.copy(errorMessage = message) }
+    }
+
+    fun consumeStatus() {
+        _uiState.update { it.copy(statusMessage = null) }
+    }
+
+    suspend fun buildProgressShareIntent(): Intent? = withContext(Dispatchers.IO) {
+        runCatching {
+            val syncSettings = comicProgressSyncStore.settingsFlow.first()
+            val payload = buildComicProgressPayload(
+                comicBookDao = comicBookDao,
+                sourceDeviceId = syncSettings.localDeviceId,
+                sourceDeviceName = syncSettings.localDeviceName
+            )
+
+            if (payload == null) {
+                _uiState.update {
+                    it.copy(
+                        statusMessage = "共有できる読書進捗がありません",
+                        errorMessage = null
+                    )
+                }
+                return@withContext null
+            }
+
+            var switchedFromLanFallback = false
+            if (syncSettings.registeredDevices.isNotEmpty()) {
+                val pushResult = comicProgressLanSyncManager.pushPayloadToRegisteredDevices(
+                    payloadText = payload.toString()
+                )
+                if (pushResult.successCount > 0) {
+                    val suffix = if (pushResult.failureCount > 0) {
+                        "（${pushResult.failureCount}台は未到達）"
+                    } else {
+                        ""
+                    }
+                    _uiState.update {
+                        it.copy(
+                            statusMessage = "登録端末へ進捗を送信しました$suffix",
+                            errorMessage = null
+                        )
+                    }
+                    return@withContext null
+                }
+
+                if (pushResult.attemptedCount > 0) {
+                    switchedFromLanFallback = true
+                }
+            }
+
+            val exportDir = ensureProgressShareDirectory()
+            exportDir.listFiles()
+                ?.filter { file -> file.isFile && file.name.startsWith(COMIC_PROGRESS_EXPORT_PREFIX) }
+                ?.forEach { file -> runCatching { file.delete() } }
+
+            val exportFile = File(
+                exportDir,
+                "${COMIC_PROGRESS_EXPORT_PREFIX}${System.currentTimeMillis()}.json"
+            )
+
+            exportFile.outputStream().bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write(payload.toString())
+            }
+
+            val exportUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.logprovider",
+                exportFile
+            )
+
+            _uiState.update {
+                it.copy(
+                    statusMessage = if (switchedFromLanFallback) {
+                        "LAN共有に失敗したため、進捗共有ファイルを作成しました"
+                    } else {
+                        "進捗共有ファイルを作成しました"
+                    },
+                    errorMessage = null
+                )
+            }
+
+            Intent(Intent.ACTION_SEND).apply {
+                type = "application/json"
+                putExtra(Intent.EXTRA_STREAM, exportUri)
+                putExtra(Intent.EXTRA_SUBJECT, "コミック進捗")
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    "コミックの読書進捗です。受信側で取り込みからJSONを選択してください。"
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }.getOrElse { error ->
+            _uiState.update {
+                it.copy(
+                    statusMessage = null,
+                    errorMessage = "進捗共有の準備に失敗しました: ${error.message ?: "不明なエラー"}"
+                )
+            }
+            null
+        }
+    }
+
+    fun importProgress(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+
+                val jsonText = context.contentResolver.openInputStream(uri)
+                    ?.bufferedReader(Charsets.UTF_8)
+                    ?.use { reader -> reader.readText() }
+                    ?: error("ファイルを読み込めませんでした")
+
+                val result = importComicProgressPayload(
+                    comicBookDao = comicBookDao,
+                    payloadText = jsonText
+                )
+
+                if (result.updatedCount == 0) {
+                    _uiState.update {
+                        it.copy(
+                            statusMessage = null,
+                            errorMessage = if (result.skippedCount > 0) {
+                                "一致するコミックが見つからず、進捗は更新されませんでした"
+                            } else {
+                                "進捗は更新されませんでした"
+                            }
+                        )
+                    }
+                } else {
+                    val suffix = if (result.skippedCount > 0) {
+                        "（${result.skippedCount}件は未一致または更新不要）"
+                    } else {
+                        ""
+                    }
+                    _uiState.update {
+                        it.copy(
+                            statusMessage = "進捗を${result.updatedCount}件取り込みました$suffix",
+                            errorMessage = null
+                        )
+                    }
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        statusMessage = null,
+                        errorMessage = "進捗の取込に失敗しました: ${error.message ?: "不明なエラー"}"
+                    )
+                }
+            }
+        }
+    }
+
     fun selectComicFolder(folderId: Long?) {
         if (folderId != null) {
             val folderUi = _uiState.value.folders.firstOrNull { it.id == folderId }
             if (
                 folderUi != null &&
                 folderUi.isLockEnabled &&
-                folderUi.isHidden &&
                 !_uiState.value.showHiddenLocked
             ) {
                 // ロック+非表示のフォルダにはアクセスさせない
@@ -516,21 +899,9 @@ class ComicReaderViewModel @Inject constructor(
                 lockConfigDao.upsert(
                     existing.copy(
                         isEnabled = enable,
-                        isHidden = if (enable) true else existing.isHidden
+                        isHidden = true
                     )
                 )
-                return@launch
-            }
-
-            val global = lockConfigDao.findByTarget(
-                LockTargetType.APP_GLOBAL.name,
-                null
-            )
-
-            if (global == null) {
-                _uiState.update {
-                    it.copy(errorMessage = "先に設定タブでグローバルロックを設定してください")
-                }
                 return@launch
             }
 
@@ -538,10 +909,10 @@ class ComicReaderViewModel @Inject constructor(
                 LockConfig(
                     targetType = LockTargetType.COMIC_FOLDER.name,
                     targetId = folderId,
-                    authMethod = global.authMethod,
-                    pinHash = global.pinHash,
-                    patternHash = global.patternHash,
-                    autoLockMinutes = global.autoLockMinutes,
+                    authMethod = LockAuthMethod.PIN.name,
+                    pinHash = null,
+                    patternHash = null,
+                    autoLockMinutes = 5,
                     isHidden = true,
                     isEnabled = true
                 )
@@ -552,9 +923,7 @@ class ComicReaderViewModel @Inject constructor(
     fun toggleHiddenComicVisibility(show: Boolean) {
         _uiState.update { state ->
             if (!show) {
-                val filtered = state.allFolders.filterNot {
-                    it.isLockEnabled && it.isHidden
-                }
+                val filtered = state.allFolders.filterNot { it.isLockEnabled }
                 val resolvedSelected = if (
                     state.selectedFolderId != null &&
                     filtered.none { it.id == state.selectedFolderId }
@@ -586,8 +955,15 @@ class ComicReaderViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             comicBookDao.deleteById(bookId)
             if (_uiState.value.currentBookId == bookId) {
+                backgroundPageLoadJob?.cancel()
                 _uiState.update {
-                    it.copy(currentBookId = null, pages = emptyList(), currentPage = 0)
+                    it.copy(
+                        currentBookId = null,
+                        pages = emptyList(),
+                        currentPage = 0,
+                        totalPageCount = 0,
+                        isBookFullyLoaded = true
+                    )
                 }
             }
         }
@@ -729,240 +1105,539 @@ class ComicReaderViewModel @Inject constructor(
         folderUriString: String,
         settings: ComicReaderSettings
     ): List<ComicPage> {
-        val folderUri = folderUriString.toUri()
-        val root = DocumentFile.fromTreeUri(context, folderUri) ?: return emptyList()
-        val imageFiles = root.listFiles()
-            .filter { file ->
-                file.isFile && file.name.hasImageExtension()
-            }
-            .sortedBy { file -> file.name?.lowercase(Locale.getDefault()) }
+        val pageSources = loadFolderPageSources(folderUriString)
 
-        val needsProcessing = settings.autoTrimEnabled || settings.autoSplitEnabled
+        val needsProcessing = shouldPreprocessPages(settings)
         if (!needsProcessing) {
-            return imageFiles.mapIndexed { index, file ->
+            AppLogger.i(
+                "ComicReader",
+                "Skipping preprocessing for ${pageSources.size} folder pages " +
+                    "(mode=${settings.mode}, trim=${settings.autoTrimEnabled}, split=${settings.autoSplitEnabled})"
+            )
+            return pageSources.mapIndexed { index, source ->
                 ComicPage(
                     index = index,
-                    model = file.uri,
-                    sourceName = file.name ?: "page"
+                    model = source.directUri,
+                    sourceName = source.sourceName
                 )
             }
         }
 
-        return buildPageModelsFromDocuments(imageFiles, settings)
+        return buildPageModelsFromSources(
+            sources = pageSources,
+            settings = settings,
+            logDescription = "folder"
+        )
     }
 
     private suspend fun loadArchivePages(
         archiveUriString: String,
         settings: ComicReaderSettings
     ): List<ComicPage> {
-        val archiveUri = archiveUriString.toUri()
-        val fileName = resolveDisplayName(archiveUri).lowercase(Locale.getDefault())
+        val pageSources = loadArchivePageSources(archiveUriString)
+        val fileName = resolveDisplayName(archiveUriString.toUri()).lowercase(Locale.getDefault())
 
-        val cacheDir = File(context.cacheDir, "comic_archive_pages")
-        cacheDir.mkdirs()
-        cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+        AppLogger.i("ComicReader", "Archive extracted: ${pageSources.size} pages from $fileName")
 
-        if (fileName.endsWith(".cbr") || fileName.endsWith(".rar")) {
-            extractRarImages(archiveUri, cacheDir)
-        } else {
-            extractZipImages(archiveUri, cacheDir)
+        val needsProcessing = shouldPreprocessPages(settings)
+        if (!needsProcessing) {
+            AppLogger.i(
+                "ComicReader",
+                "Skipping preprocessing for ${pageSources.size} extracted pages " +
+                    "(mode=${settings.mode}, trim=${settings.autoTrimEnabled}, split=${settings.autoSplitEnabled})"
+            )
+            return pageSources.mapIndexed { index, source ->
+                ComicPage(
+                    index = index,
+                    model = source.directUri,
+                    sourceName = source.sourceName
+                )
+            }
         }
 
-        val pages = cacheDir.listFiles()
+        return buildPageModelsFromSources(
+            sources = pageSources,
+            settings = settings,
+            logDescription = "extracted"
+        )
+    }
+
+    private suspend fun loadFolderPageSources(folderUriString: String): List<ComicPageSource> {
+        val folderUri = folderUriString.toUri()
+        val root = resolveFolderDocument(folderUri) ?: return emptyList()
+        return root.listFiles()
+            .filter { file ->
+                file.isFile && file.name.hasImageExtension()
+            }
+            .sortedWith { left, right ->
+                compareNaturally(left.name.orEmpty(), right.name.orEmpty())
+            }
+            .map { document ->
+                ComicPageSource(
+                    sourceName = document.name ?: "page",
+                    directUri = document.uri,
+                    signature = resolveContentSignature(document),
+                    openStream = { context.contentResolver.openInputStream(document.uri) }
+                )
+            }
+    }
+
+    private suspend fun loadArchivePageSources(archiveUriString: String): List<ComicPageSource> {
+        val archiveUri = archiveUriString.toUri()
+        val fileName = resolveDisplayName(archiveUri).lowercase(Locale.getDefault())
+        val archiveSignature = resolveContentSignature(archiveUri)
+
+        val cacheDir = ensureArchiveCacheDir(archiveSignature)
+        var pages = cacheDir.listFiles()
             ?.filter { file -> file.isFile && file.name.hasImageExtension() }
-            ?.sortedBy { file -> file.name.lowercase(Locale.getDefault()) }
+            ?.sortedWith { left, right -> compareNaturally(left.name, right.name) }
             .orEmpty()
+
+        if (pages.isEmpty()) {
+            cacheDir.deleteRecursively()
+            cacheDir.mkdirs()
+
+            if (fileName.endsWith(".cbr") || fileName.endsWith(".rar")) {
+                extractRarImages(archiveUri, cacheDir)
+            } else {
+                extractZipImages(archiveUri, cacheDir)
+            }
+
+            pages = cacheDir.listFiles()
+                ?.filter { file -> file.isFile && file.name.hasImageExtension() }
+                ?.sortedWith { left, right -> compareNaturally(left.name, right.name) }
+                .orEmpty()
+        }
 
         AppLogger.i("ComicReader", "Archive extracted: ${pages.size} pages from $fileName")
 
-        val needsProcessing = settings.autoTrimEnabled || settings.autoSplitEnabled
-        if (!needsProcessing) {
-            return pages.mapIndexed { index, file ->
-                ComicPage(
-                    index = index,
-                    model = file.toUri(),
-                    sourceName = file.name
-                )
-            }
-        }
-
-        return buildPageModelsFromFiles(pages, settings)
-    }
-
-    private suspend fun buildPageModelsFromDocuments(
-        documents: List<DocumentFile>,
-        settings: ComicReaderSettings
-    ): List<ComicPage> {
-        val output = mutableListOf<ComicPage>()
-        var index = 0
-
-        for (document in documents) {
-            val processedUris = processAndMaterializePages(
-                sourceName = document.name ?: "page",
-                openStream = { context.contentResolver.openInputStream(document.uri) },
-                settings = settings
-            )
-
-            for (processedUri in processedUris) {
-                output += ComicPage(
-                    index = index,
-                    model = processedUri,
-                    sourceName = document.name ?: "page"
-                )
-                index += 1
-            }
-        }
-
-        return output
-    }
-
-    private suspend fun buildPageModelsFromFiles(
-        files: List<File>,
-        settings: ComicReaderSettings
-    ): List<ComicPage> {
-        val output = mutableListOf<ComicPage>()
-        var index = 0
-
-        for (file in files) {
-            val processedUris = processAndMaterializePages(
+        return pages.map { file ->
+            ComicPageSource(
                 sourceName = file.name,
-                openStream = { file.inputStream() },
-                settings = settings
+                directUri = file.toUri(),
+                signature = resolveContentSignature(file),
+                openStream = { file.inputStream() }
             )
+        }
+    }
 
+    private suspend fun buildPageModelsFromSources(
+        sources: List<ComicPageSource>,
+        settings: ComicReaderSettings,
+        logDescription: String? = null,
+        startingPageIndex: Int = 0
+    ): List<ComicPage> {
+        if (sources.isEmpty()) {
+            return emptyList()
+        }
+
+        val parallelism = comicProcessingParallelism(sources.size)
+        if (logDescription != null) {
+            AppLogger.i(
+                "ComicReader",
+                "Materializing ${sources.size} $logDescription pages with concurrency=$parallelism"
+            )
+        }
+
+        val semaphore = Semaphore(parallelism)
+        val results = coroutineScope {
+            sources.mapIndexed { sourceIndex, source ->
+                async(Dispatchers.IO) {
+                    semaphore.withPermit {
+                        val processedUris = materializePageSource(source, settings)
+                        IndexedValue(sourceIndex, source.sourceName to processedUris)
+                    }
+                }
+            }.awaitAll().sortedBy { it.index }
+        }
+
+        val output = mutableListOf<ComicPage>()
+        var index = startingPageIndex
+
+        for (result in results) {
+            val (sourceName, processedUris) = result.value
             for (processedUri in processedUris) {
                 output += ComicPage(
                     index = index,
                     model = processedUri,
-                    sourceName = file.name
+                    sourceName = sourceName
                 )
                 index += 1
             }
         }
 
         return output
+    }
+
+    private suspend fun openBookProgressively(
+        book: ComicBook,
+        settings: ComicReaderSettings
+    ): ProgressivePageLoadResult {
+        val sources = when (book.sourceType) {
+            "FOLDER" -> loadFolderPageSources(book.sourceUri)
+            "ARCHIVE" -> loadArchivePageSources(book.sourceUri)
+            else -> emptyList()
+        }
+
+        if (sources.isEmpty()) {
+            return ProgressivePageLoadResult(
+                initialPages = emptyList(),
+                remainingSources = emptyList(),
+                totalPageHint = 0
+            )
+        }
+
+        val targetLoadedPages = (book.lastReadPage.coerceAtLeast(0) + INITIAL_PAGE_PREFETCH_COUNT + 1)
+            .coerceAtLeast(1)
+        val initialPages = mutableListOf<ComicPage>()
+        var nextIndex = 0
+        var consumedSources = 0
+
+        for (source in sources) {
+            val processedUris = materializePageSource(source, settings)
+            for (processedUri in processedUris) {
+                initialPages += ComicPage(
+                    index = nextIndex,
+                    model = processedUri,
+                    sourceName = source.sourceName
+                )
+                nextIndex += 1
+            }
+            consumedSources += 1
+            if (initialPages.size >= targetLoadedPages) {
+                break
+            }
+        }
+
+        val totalPageHint = maxOf(book.totalPages, sources.size, initialPages.size)
+        AppLogger.i(
+            "ComicReader",
+            "Prepared ${initialPages.size} initial pages from $consumedSources/${sources.size} sources; " +
+                "continuingRemaining=${sources.size - consumedSources}"
+        )
+
+        return ProgressivePageLoadResult(
+            initialPages = initialPages,
+            remainingSources = sources.drop(consumedSources),
+            totalPageHint = totalPageHint
+        )
+    }
+
+    private fun startBackgroundPageLoad(
+        bookId: Long,
+        loadGeneration: Long,
+        settings: ComicReaderSettings,
+        remainingSources: List<ComicPageSource>,
+        startingPageIndex: Int,
+        totalPageHint: Int
+    ) {
+        backgroundPageLoadJob = viewModelScope.launch(Dispatchers.IO) {
+            var nextPageIndex = startingPageIndex
+            try {
+                AppLogger.i(
+                    "ComicReader",
+                    "Continuing background materialization for ${remainingSources.size} remaining sources"
+                )
+
+                for (chunk in remainingSources.chunked(BACKGROUND_PAGE_SOURCE_BATCH_SIZE)) {
+                    val batchPages = buildPageModelsFromSources(
+                        sources = chunk,
+                        settings = settings,
+                        startingPageIndex = nextPageIndex
+                    )
+                    nextPageIndex += batchPages.size
+                    publishLoadedPageBatch(
+                        bookId = bookId,
+                        loadGeneration = loadGeneration,
+                        batchPages = batchPages,
+                        totalPageCount = maxOf(totalPageHint, nextPageIndex),
+                        isComplete = false
+                    )
+                }
+
+                publishLoadedPageBatch(
+                    bookId = bookId,
+                    loadGeneration = loadGeneration,
+                    batchPages = emptyList(),
+                    totalPageCount = maxOf(totalPageHint, nextPageIndex),
+                    isComplete = true
+                )
+
+                val state = _uiState.value
+                if (state.currentBookId == bookId && loadGeneration == pageLoadGeneration) {
+                    saveProgress(
+                        bookId = bookId,
+                        currentPage = state.currentPage.coerceAtMost((state.totalPageCount - 1).coerceAtLeast(0)),
+                        totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: OutOfMemoryError) {
+                AppLogger.e("ComicReader", "Background page materialization OOM: $bookId")
+                publishBackgroundLoadFailure(bookId, loadGeneration, "残りのページ読み込みでメモリ不足が発生しました")
+            } catch (error: Exception) {
+                AppLogger.e("ComicReader", "Background page materialization failed: $bookId", error)
+                publishBackgroundLoadFailure(bookId, loadGeneration, "残りのページ読み込みに失敗しました")
+            }
+        }
+    }
+
+    private fun publishLoadedPageBatch(
+        bookId: Long,
+        loadGeneration: Long,
+        batchPages: List<ComicPage>,
+        totalPageCount: Int,
+        isComplete: Boolean
+    ) {
+        _uiState.update { state ->
+            if (state.currentBookId != bookId || loadGeneration != pageLoadGeneration) {
+                state
+            } else {
+                val mergedPages = if (batchPages.isEmpty()) {
+                    state.pages
+                } else {
+                    state.pages + batchPages
+                }
+                state.copy(
+                    pages = mergedPages,
+                    totalPageCount = maxOf(totalPageCount, mergedPages.size),
+                    isBookFullyLoaded = if (isComplete) true else state.isBookFullyLoaded,
+                    errorMessage = if (isComplete) state.errorMessage else null
+                )
+            }
+        }
+    }
+
+    private fun publishBackgroundLoadFailure(
+        bookId: Long,
+        loadGeneration: Long,
+        message: String
+    ) {
+        _uiState.update { state ->
+            if (state.currentBookId != bookId || loadGeneration != pageLoadGeneration) {
+                state
+            } else {
+                state.copy(
+                    isBookFullyLoaded = true,
+                    errorMessage = message
+                )
+            }
+        }
+    }
+
+    private suspend fun materializePageSource(
+        source: ComicPageSource,
+        settings: ComicReaderSettings
+    ): List<Uri> {
+        return processAndMaterializePages(
+            cacheKey = buildProcessedPageCacheKey(source.signature, settings),
+            sourceName = source.sourceName,
+            openStream = source.openStream,
+            settings = settings
+        )
     }
 
     private suspend fun processAndMaterializePages(
+        cacheKey: String,
         sourceName: String,
         openStream: () -> java.io.InputStream?,
         settings: ComicReaderSettings
     ): List<Uri> {
-        return withContext(Dispatchers.IO) {
-            try {
-                var sourceBytes: ByteArray? = openStream()?.use { it.readBytes() }
-                    ?: return@withContext emptyList()
-                val bytes = sourceBytes ?: return@withContext emptyList()
-                AppLogger.d("ComicReader", "Processing page: $sourceName (${bytes.size} bytes)")
+        val cacheDir = ensureProcessedCacheDir(cacheKey)
+        val cachedPages = cacheDir.listFiles()
+            ?.filter { file -> file.isFile && file.name.hasImageExtension() }
+            ?.sortedWith { left, right -> compareNaturally(left.name, right.name) }
+            .orEmpty()
+        if (cachedPages.isNotEmpty()) {
+            return cachedPages.map { it.toUri() }
+        }
 
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-                    AppLogger.w(
-                        "ComicReader",
-                        "Invalid image: $sourceName (${bounds.outWidth}x${bounds.outHeight})"
-                    )
-                    sourceBytes = null
-                    return@withContext emptyList()
-                }
+        return try {
+            cacheDir.deleteRecursively()
+            cacheDir.mkdirs()
 
-                AppLogger.d("ComicReader", "Image size: ${bounds.outWidth}x${bounds.outHeight}")
+            val bytes = openStream()?.use { it.readBytes() }
+                ?: return emptyList()
+            AppLogger.d("ComicReader", "Processing page: $sourceName (${bytes.size} bytes)")
 
-                if (!settings.autoTrimEnabled && !settings.autoSplitEnabled) {
-                    val result = writeSingleTempPage(bytes, sourceName)
-                    sourceBytes = null
-                    return@withContext result
-                }
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                AppLogger.w(
+                    "ComicReader",
+                    "Invalid image: $sourceName (${bounds.outWidth}x${bounds.outHeight})"
+                )
+                return emptyList()
+            }
 
-                val processed = runCatching {
-                    pageProcessor.process(bytes = bytes, settings = settings)
-                }.getOrElse { error ->
-                    AppLogger.w("ComicReader", "PageProcessor failed for $sourceName", error)
-                    emptyList()
-                }
+            AppLogger.d("ComicReader", "Image size: ${bounds.outWidth}x${bounds.outHeight}")
 
-                if (processed.isEmpty()) {
-                    val result = writeSingleTempPage(bytes, sourceName)
-                    sourceBytes = null
-                    return@withContext result
-                }
+            if (!shouldPreprocessPages(settings)) {
+                return writeSingleTempPage(bytes, cacheDir, "single")
+            }
 
-                val fullRect = android.graphics.Rect(0, 0, bounds.outWidth, bounds.outHeight)
-                if (processed.size == 1 && processed.first().rect == fullRect) {
-                    val result = writeSingleTempPage(bytes, sourceName)
-                    sourceBytes = null
-                    return@withContext result
-                }
-
-                val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
-                val sampleSize = when {
-                    maxDim > 8_000 -> 4
-                    maxDim > 4_000 -> 2
-                    else -> 1
-                }
-                val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                val sourceBitmap = BitmapFactory.decodeByteArray(
-                    bytes,
-                    0,
-                    bytes.size,
-                    decodeOptions
-                ) ?: return@withContext emptyList()
-                sourceBytes = null
-
-                val scaleX = sourceBitmap.width.toFloat() / bounds.outWidth.toFloat().coerceAtLeast(1f)
-                val scaleY = sourceBitmap.height.toFloat() / bounds.outHeight.toFloat().coerceAtLeast(1f)
-                val outputUris = mutableListOf<Uri>()
-
-                processed.forEachIndexed { index, page ->
-                    val rect = page.rect
-
-                    val left = (rect.left * scaleX).toInt().coerceIn(0, sourceBitmap.width - 1)
-                    val top = (rect.top * scaleY).toInt().coerceIn(0, sourceBitmap.height - 1)
-                    val cropWidth = (rect.width() * scaleX).toInt()
-                        .coerceIn(1, sourceBitmap.width - left)
-                    val cropHeight = (rect.height() * scaleY).toInt()
-                        .coerceIn(1, sourceBitmap.height - top)
-
-                    val cropped = Bitmap.createBitmap(sourceBitmap, left, top, cropWidth, cropHeight)
-                    val file = File(
-                        ensureProcessedCacheDir(),
-                        "${sourceName.hashCode()}_${System.nanoTime()}_${index}.jpg"
-                    )
-                    FileOutputStream(file).use { output ->
-                        cropped.compress(Bitmap.CompressFormat.JPEG, 85, output)
-                    }
-                    cropped.recycle()
-                    outputUris += file.toUri()
-                }
-
-                sourceBitmap.recycle()
-                outputUris
-            } catch (_: OutOfMemoryError) {
-                AppLogger.e("ComicReader", "OOM processing page: $sourceName")
-                System.gc()
-                emptyList()
-            } catch (error: Exception) {
-                AppLogger.e("ComicReader", "Error processing page: $sourceName", error)
+            val processed = runCatching {
+                pageProcessor.process(bytes = bytes, settings = settings)
+            }.getOrElse { error ->
+                AppLogger.w("ComicReader", "PageProcessor failed for $sourceName", error)
                 emptyList()
             }
+
+            if (processed.isEmpty()) {
+                return writeSingleTempPage(bytes, cacheDir, "fallback")
+            }
+
+            val fullRect = android.graphics.Rect(0, 0, bounds.outWidth, bounds.outHeight)
+            if (processed.size == 1 && processed.first().rect == fullRect) {
+                return writeSingleTempPage(bytes, cacheDir, "full")
+            }
+
+            val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+            val sampleSize = when {
+                maxDim > 8_000 -> 4
+                maxDim > 4_000 -> 2
+                else -> 1
+            }
+            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val sourceBitmap = BitmapFactory.decodeByteArray(
+                bytes,
+                0,
+                bytes.size,
+                decodeOptions
+            ) ?: return emptyList()
+
+            val scaleX = sourceBitmap.width.toFloat() / bounds.outWidth.toFloat().coerceAtLeast(1f)
+            val scaleY = sourceBitmap.height.toFloat() / bounds.outHeight.toFloat().coerceAtLeast(1f)
+            val outputUris = mutableListOf<Uri>()
+
+            processed.forEachIndexed { index, page ->
+                val rect = page.rect
+
+                val left = (rect.left * scaleX).toInt().coerceIn(0, sourceBitmap.width - 1)
+                val top = (rect.top * scaleY).toInt().coerceIn(0, sourceBitmap.height - 1)
+                val cropWidth = (rect.width() * scaleX).toInt()
+                    .coerceIn(1, sourceBitmap.width - left)
+                val cropHeight = (rect.height() * scaleY).toInt()
+                    .coerceIn(1, sourceBitmap.height - top)
+
+                val cropped = Bitmap.createBitmap(sourceBitmap, left, top, cropWidth, cropHeight)
+                val file = File(
+                    cacheDir,
+                    index.toString().padStart(3, '0') + ".jpg"
+                )
+                FileOutputStream(file).use { output ->
+                    cropped.compress(Bitmap.CompressFormat.JPEG, 85, output)
+                }
+                cropped.recycle()
+                outputUris += file.toUri()
+            }
+
+            sourceBitmap.recycle()
+            outputUris
+        } catch (_: OutOfMemoryError) {
+            AppLogger.e("ComicReader", "OOM processing page: $sourceName")
+            System.gc()
+            cacheDir.deleteRecursively()
+            emptyList()
+        } catch (error: Exception) {
+            AppLogger.e("ComicReader", "Error processing page: $sourceName", error)
+            cacheDir.deleteRecursively()
+            emptyList()
         }
     }
 
-    private fun writeSingleTempPage(bytes: ByteArray, sourceName: String): List<Uri> {
-        val file = File(
-            ensureProcessedCacheDir(),
-            "${sourceName.hashCode()}_${System.nanoTime()}_single.jpg"
-        )
+    private fun comicProcessingParallelism(sourceCount: Int): Int {
+        val processors = Runtime.getRuntime().availableProcessors().coerceAtLeast(2)
+        return minOf(sourceCount.coerceAtLeast(1), processors.coerceAtMost(3))
+    }
+
+    private fun shouldPreprocessPages(settings: ComicReaderSettings): Boolean {
+        return settings.autoTrimEnabled ||
+            (settings.mode == ReaderMode.PAGE && settings.autoSplitEnabled)
+    }
+
+    private fun writeSingleTempPage(bytes: ByteArray, outputDir: File, fileName: String): List<Uri> {
+        outputDir.mkdirs()
+        val file = File(outputDir, "$fileName.jpg")
         FileOutputStream(file).use { output ->
             output.write(bytes)
         }
         return listOf(file.toUri())
     }
 
-    private fun ensureProcessedCacheDir(): File {
-        val dir = File(context.cacheDir, "comic_processed_pages")
+    private fun ensureProcessedCacheDir(cacheKey: String): File {
+        val dir = File(File(context.cacheDir, "comic_processed_pages"), cacheKey)
         dir.mkdirs()
         return dir
+    }
+
+    private fun ensureArchiveCacheDir(signature: ContentCacheSignature): File {
+        val dir = File(File(context.cacheDir, "comic_archive_pages"), signature.cacheKey)
+        dir.mkdirs()
+        return dir
+    }
+
+    private fun resolveContentSignature(document: DocumentFile): ContentCacheSignature {
+        return ContentCacheSignature(
+            identifier = document.uri.toString(),
+            lastModified = document.lastModified(),
+            sizeBytes = document.length()
+        )
+    }
+
+    private fun resolveContentSignature(file: File): ContentCacheSignature {
+        return ContentCacheSignature(
+            identifier = file.absolutePath,
+            lastModified = file.lastModified(),
+            sizeBytes = file.length()
+        )
+    }
+
+    private fun resolveContentSignature(uri: Uri): ContentCacheSignature {
+        val document = runCatching { DocumentFile.fromSingleUri(context, uri) }.getOrNull()
+        return if (document != null) {
+            resolveContentSignature(document)
+        } else {
+            ContentCacheSignature(
+                identifier = uri.toString(),
+                lastModified = 0L,
+                sizeBytes = 0L
+            )
+        }
+    }
+
+    private fun buildProcessedPageCacheKey(
+        signature: ContentCacheSignature,
+        settings: ComicReaderSettings
+    ): String {
+        return hashComicCacheKey(
+            buildString {
+                append(signature.cacheKey)
+                append('|')
+                append(settings.mode.name)
+                append('|')
+                append(settings.readingDirection.name)
+                append('|')
+                append(settings.autoTrimEnabled)
+                append('|')
+                append(settings.autoSplitEnabled)
+                append('|')
+                append(settings.smartSplitEnabled)
+                append('|')
+                append(settings.splitThreshold)
+                append('|')
+                append(settings.splitOffsetPercent)
+                append('|')
+                append(settings.trimTolerance)
+                append('|')
+                append(settings.trimSafetyMargin)
+                append('|')
+                append(settings.trimSensitivity.name)
+                append('|')
+                append(settings.zoomMax)
+            }
+        )
     }
 
     private suspend fun extractZipImages(
@@ -1029,6 +1704,7 @@ class ComicReaderViewModel @Inject constructor(
                 var index = 0
 
                 while (header != null) {
+                    @Suppress("DEPRECATION")
                     val entryName = header.fileNameString ?: "entry_$index"
                     if (!header.isDirectory && entryName.hasImageExtension()) {
                         val outFile = File(
@@ -1058,7 +1734,7 @@ class ComicReaderViewModel @Inject constructor(
         }
 
         runCatching {
-            DocumentFile.fromTreeUri(context, uri)?.name
+            resolveFolderDocument(uri)?.name
         }.getOrNull()?.let { name ->
             return name
         }
@@ -1093,10 +1769,12 @@ class ComicReaderViewModel @Inject constructor(
         return when (sourceType) {
             "FOLDER" -> {
                 try {
-                    val root = DocumentFile.fromTreeUri(context, uri) ?: return null
+                    val root = resolveFolderDocument(uri) ?: return null
                     root.listFiles()
                         .filter { file -> file.isFile && file.name.hasImageExtension() }
-                        .minByOrNull { file -> file.name?.lowercase(Locale.getDefault()) ?: "" }
+                        .minWithOrNull { left, right ->
+                            compareNaturally(left.name.orEmpty(), right.name.orEmpty())
+                        }
                         ?.uri
                         ?.toString()
                 } catch (_: Exception) {
@@ -1141,6 +1819,7 @@ class ComicReaderViewModel @Inject constructor(
                     Archive(tempRar).use { archive ->
                         var header = archive.nextFileHeader()
                         while (header != null) {
+                            @Suppress("DEPRECATION")
                             val entryName = header.fileNameString ?: ""
                             if (!header.isDirectory && entryName.hasImageExtension()) {
                                 FileOutputStream(coverFile).use { output ->
@@ -1192,7 +1871,7 @@ class ComicReaderViewModel @Inject constructor(
     private suspend fun estimatePageCount(uri: Uri, sourceType: String): Int {
         return when (sourceType) {
             "FOLDER" -> {
-                val root = DocumentFile.fromTreeUri(context, uri)
+                val root = resolveFolderDocument(uri)
                 root?.listFiles()?.count { it.isFile && it.name.hasImageExtension() } ?: 0
             }
 
@@ -1221,6 +1900,25 @@ class ComicReaderViewModel @Inject constructor(
             else -> "IN_PROGRESS"
         }
     }
+
+    private fun ensureProgressShareDirectory(): File {
+        val dir = File(context.filesDir, "logs")
+        dir.mkdirs()
+        return dir
+    }
+}
+
+private data class ContentCacheSignature(
+    val identifier: String,
+    val lastModified: Long,
+    val sizeBytes: Long
+) {
+    val cacheKey: String = hashComicCacheKey("$identifier|$lastModified|$sizeBytes")
+}
+
+private fun hashComicCacheKey(value: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+    return digest.joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 }
 
 private fun String?.hasImageExtension(): Boolean {
@@ -1229,6 +1927,14 @@ private fun String?.hasImageExtension(): Boolean {
         ?.lowercase(Locale.getDefault())
         ?: return false
     return ext in SUPPORTED_IMAGE_EXTENSIONS
+}
+
+private fun String?.hasArchiveExtension(): Boolean {
+    val ext = this
+        ?.substringAfterLast('.', missingDelimiterValue = "")
+        ?.lowercase(Locale.getDefault())
+        ?: return false
+    return ext in SUPPORTED_ARCHIVE_EXTENSIONS
 }
 
 private fun sanitizeFileName(original: String): String {

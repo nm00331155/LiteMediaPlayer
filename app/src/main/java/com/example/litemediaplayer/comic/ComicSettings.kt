@@ -69,6 +69,27 @@ data class ComicReaderSettings(
     val touchZone: TouchZoneConfig = TouchZoneConfig()
 )
 
+object ComicSettingsDefaults {
+    val values = ComicReaderSettings()
+
+    const val ANIMATION_SPEED_MIN = 100
+    const val ANIMATION_SPEED_MAX = 2000
+    const val ZOOM_MAX_MIN = 2f
+    const val ZOOM_MAX_MAX = 10f
+    const val SPLIT_THRESHOLD_MIN = 1f
+    const val SPLIT_THRESHOLD_MAX = 4f
+    const val SPLIT_OFFSET_MIN = -0.10f
+    const val SPLIT_OFFSET_MAX = 0.10f
+    const val TRIM_TOLERANCE_MIN = 10
+    const val TRIM_TOLERANCE_MAX = 120
+    const val TRIM_SAFETY_MARGIN_MIN = 0
+    const val TRIM_SAFETY_MARGIN_MAX = 40
+    const val TOUCH_LONG_PRESS_MIN = 200
+    const val TOUCH_LONG_PRESS_MAX = 3000
+    const val TOUCH_SKIP_PAGE_MIN = 1
+    const val TOUCH_SKIP_PAGE_MAX = 100
+}
+
 @Singleton
 class ComicSettings @Inject constructor(
     @ApplicationContext private val context: Context
@@ -82,7 +103,10 @@ class ComicSettings @Inject constructor(
                 animation = prefs[Keys.PAGE_ANIMATION]
                     ?.toEnumOrDefault(PageAnimation.SLIDE)
                     ?: PageAnimation.SLIDE,
-                animationSpeedMs = prefs[Keys.ANIMATION_SPEED_MS] ?: 300,
+                animationSpeedMs = (prefs[Keys.ANIMATION_SPEED_MS] ?: 300).coerceIn(
+                    ComicSettingsDefaults.ANIMATION_SPEED_MIN,
+                    ComicSettingsDefaults.ANIMATION_SPEED_MAX
+                ),
                 mode = prefs[Keys.READER_MODE]
                     ?.toEnumOrDefault(ReaderMode.PAGE)
                     ?: ReaderMode.PAGE,
@@ -92,14 +116,29 @@ class ComicSettings @Inject constructor(
                 backgroundColorArgb = prefs[Keys.BACKGROUND_COLOR_ARGB] ?: 0xFF000000.toInt(),
                 pagePaddingDp = prefs[Keys.PAGE_PADDING_DP] ?: 0,
                 blueLightFilterEnabled = prefs[Keys.BLUE_LIGHT_FILTER] ?: false,
-                zoomMax = prefs[Keys.ZOOM_MAX] ?: 5f,
+                zoomMax = (prefs[Keys.ZOOM_MAX] ?: 5f).coerceIn(
+                    ComicSettingsDefaults.ZOOM_MAX_MIN,
+                    ComicSettingsDefaults.ZOOM_MAX_MAX
+                ),
                 autoSplitEnabled = prefs[Keys.AUTO_SPLIT_ENABLED] ?: true,
-                splitThreshold = prefs[Keys.SPLIT_THRESHOLD] ?: 1.3f,
+                splitThreshold = (prefs[Keys.SPLIT_THRESHOLD] ?: 1.3f).coerceIn(
+                    ComicSettingsDefaults.SPLIT_THRESHOLD_MIN,
+                    ComicSettingsDefaults.SPLIT_THRESHOLD_MAX
+                ),
                 smartSplitEnabled = prefs[Keys.SMART_SPLIT_ENABLED] ?: true,
-                splitOffsetPercent = prefs[Keys.SPLIT_OFFSET_PERCENT] ?: 0f,
+                splitOffsetPercent = (prefs[Keys.SPLIT_OFFSET_PERCENT] ?: 0f).coerceIn(
+                    ComicSettingsDefaults.SPLIT_OFFSET_MIN,
+                    ComicSettingsDefaults.SPLIT_OFFSET_MAX
+                ),
                 autoTrimEnabled = prefs[Keys.AUTO_TRIM_ENABLED] ?: false,
-                trimTolerance = prefs[Keys.TRIM_TOLERANCE] ?: 30,
-                trimSafetyMargin = prefs[Keys.TRIM_SAFETY_MARGIN] ?: 2,
+                trimTolerance = (prefs[Keys.TRIM_TOLERANCE] ?: 30).coerceIn(
+                    ComicSettingsDefaults.TRIM_TOLERANCE_MIN,
+                    ComicSettingsDefaults.TRIM_TOLERANCE_MAX
+                ),
+                trimSafetyMargin = (prefs[Keys.TRIM_SAFETY_MARGIN] ?: 2).coerceIn(
+                    ComicSettingsDefaults.TRIM_SAFETY_MARGIN_MIN,
+                    ComicSettingsDefaults.TRIM_SAFETY_MARGIN_MAX
+                ),
                 trimSensitivity = prefs[Keys.TRIM_SENSITIVITY]
                     ?.toEnumOrDefault(TrimSensitivity.MEDIUM)
                     ?: TrimSensitivity.MEDIUM,
@@ -110,23 +149,23 @@ class ComicSettings @Inject constructor(
                         ?.toEnumOrDefault(TouchZoneLayout.THREE_COLUMN)
                         ?: TouchZoneLayout.THREE_COLUMN,
                     leftTap = prefs[Keys.TOUCH_LEFT_TAP]
-                        ?.toEnumOrDefault(TouchAction.NONE)
-                        ?: TouchAction.NONE,
+                        ?.toEnumOrDefault(TouchAction.NEXT_PAGE)
+                        ?: TouchAction.NEXT_PAGE,
                     centerTap = prefs[Keys.TOUCH_CENTER_TAP]
                         ?.toEnumOrDefault(TouchAction.TOGGLE_CONTROLS)
                         ?: TouchAction.TOGGLE_CONTROLS,
                     rightTap = prefs[Keys.TOUCH_RIGHT_TAP]
-                        ?.toEnumOrDefault(TouchAction.NONE)
-                        ?: TouchAction.NONE,
+                        ?.toEnumOrDefault(TouchAction.PREV_PAGE)
+                        ?: TouchAction.PREV_PAGE,
                     leftLongPress = prefs[Keys.TOUCH_LEFT_LONG]
-                        ?.toEnumOrDefault(TouchAction.FIRST_PAGE)
-                        ?: TouchAction.FIRST_PAGE,
+                        ?.toEnumOrDefault(TouchAction.SKIP_FORWARD)
+                        ?: TouchAction.SKIP_FORWARD,
                     centerLongPress = prefs[Keys.TOUCH_CENTER_LONG]
                         ?.toEnumOrDefault(TouchAction.JUMP_TO_PAGE)
                         ?: TouchAction.JUMP_TO_PAGE,
                     rightLongPress = prefs[Keys.TOUCH_RIGHT_LONG]
-                        ?.toEnumOrDefault(TouchAction.LAST_PAGE)
-                        ?: TouchAction.LAST_PAGE,
+                        ?.toEnumOrDefault(TouchAction.SKIP_BACKWARD)
+                        ?: TouchAction.SKIP_BACKWARD,
                     topLeftTap = prefs[Keys.TOUCH_TOP_LEFT_TAP]
                         ?.toEnumOrDefault(TouchAction.PREV_PAGE)
                         ?: TouchAction.PREV_PAGE,
@@ -163,8 +202,14 @@ class ComicSettings @Inject constructor(
                     bottomRightLongPress = prefs[Keys.TOUCH_BOTTOM_RIGHT_LONG]
                         ?.toEnumOrDefault(TouchAction.NONE)
                         ?: TouchAction.NONE,
-                    longPressMs = (prefs[Keys.TOUCH_LONG_PRESS_MS] ?: 500).coerceIn(200, 1500),
-                    skipPageCount = (prefs[Keys.TOUCH_SKIP_PAGE_COUNT] ?: 10).coerceIn(1, 50),
+                    longPressMs = (prefs[Keys.TOUCH_LONG_PRESS_MS] ?: 500).coerceIn(
+                        ComicSettingsDefaults.TOUCH_LONG_PRESS_MIN,
+                        ComicSettingsDefaults.TOUCH_LONG_PRESS_MAX
+                    ),
+                    skipPageCount = (prefs[Keys.TOUCH_SKIP_PAGE_COUNT] ?: 10).coerceIn(
+                        ComicSettingsDefaults.TOUCH_SKIP_PAGE_MIN,
+                        ComicSettingsDefaults.TOUCH_SKIP_PAGE_MAX
+                    ),
                     volumeUpAction = prefs[Keys.VOLUME_UP_ACTION]
                         ?.toEnumOrDefault(TouchAction.NEXT_PAGE)
                         ?: TouchAction.NEXT_PAGE,
@@ -201,7 +246,10 @@ class ComicSettings @Inject constructor(
 
     suspend fun updateSplitThreshold(threshold: Float) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.SPLIT_THRESHOLD] = threshold
+            prefs[Keys.SPLIT_THRESHOLD] = threshold.coerceIn(
+                ComicSettingsDefaults.SPLIT_THRESHOLD_MIN,
+                ComicSettingsDefaults.SPLIT_THRESHOLD_MAX
+            )
         }
     }
 
@@ -213,7 +261,10 @@ class ComicSettings @Inject constructor(
 
     suspend fun updateSplitOffset(offsetPercent: Float) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.SPLIT_OFFSET_PERCENT] = offsetPercent
+            prefs[Keys.SPLIT_OFFSET_PERCENT] = offsetPercent.coerceIn(
+                ComicSettingsDefaults.SPLIT_OFFSET_MIN,
+                ComicSettingsDefaults.SPLIT_OFFSET_MAX
+            )
         }
     }
 
@@ -225,13 +276,19 @@ class ComicSettings @Inject constructor(
 
     suspend fun updateTrimTolerance(tolerance: Int) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.TRIM_TOLERANCE] = tolerance
+            prefs[Keys.TRIM_TOLERANCE] = tolerance.coerceIn(
+                ComicSettingsDefaults.TRIM_TOLERANCE_MIN,
+                ComicSettingsDefaults.TRIM_TOLERANCE_MAX
+            )
         }
     }
 
     suspend fun updateTrimSafetyMargin(margin: Int) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.TRIM_SAFETY_MARGIN] = margin
+            prefs[Keys.TRIM_SAFETY_MARGIN] = margin.coerceIn(
+                ComicSettingsDefaults.TRIM_SAFETY_MARGIN_MIN,
+                ComicSettingsDefaults.TRIM_SAFETY_MARGIN_MAX
+            )
         }
     }
 
@@ -249,7 +306,10 @@ class ComicSettings @Inject constructor(
 
     suspend fun updateAnimationSpeed(speedMs: Int) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.ANIMATION_SPEED_MS] = speedMs.coerceIn(100, 1000)
+            prefs[Keys.ANIMATION_SPEED_MS] = speedMs.coerceIn(
+                ComicSettingsDefaults.ANIMATION_SPEED_MIN,
+                ComicSettingsDefaults.ANIMATION_SPEED_MAX
+            )
         }
     }
 
@@ -273,7 +333,10 @@ class ComicSettings @Inject constructor(
 
     suspend fun updateZoomMax(maxZoom: Float) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.ZOOM_MAX] = maxZoom.coerceIn(2f, 5f)
+            prefs[Keys.ZOOM_MAX] = maxZoom.coerceIn(
+                ComicSettingsDefaults.ZOOM_MAX_MIN,
+                ComicSettingsDefaults.ZOOM_MAX_MAX
+            )
         }
     }
 
@@ -310,8 +373,14 @@ class ComicSettings @Inject constructor(
             prefs[Keys.TOUCH_BOTTOM_LEFT_LONG] = config.bottomLeftLongPress.name
             prefs[Keys.TOUCH_BOTTOM_CENTER_LONG] = config.bottomCenterLongPress.name
             prefs[Keys.TOUCH_BOTTOM_RIGHT_LONG] = config.bottomRightLongPress.name
-            prefs[Keys.TOUCH_LONG_PRESS_MS] = config.longPressMs.coerceIn(200, 1500)
-            prefs[Keys.TOUCH_SKIP_PAGE_COUNT] = config.skipPageCount.coerceIn(1, 50)
+            prefs[Keys.TOUCH_LONG_PRESS_MS] = config.longPressMs.coerceIn(
+                ComicSettingsDefaults.TOUCH_LONG_PRESS_MIN,
+                ComicSettingsDefaults.TOUCH_LONG_PRESS_MAX
+            )
+            prefs[Keys.TOUCH_SKIP_PAGE_COUNT] = config.skipPageCount.coerceIn(
+                ComicSettingsDefaults.TOUCH_SKIP_PAGE_MIN,
+                ComicSettingsDefaults.TOUCH_SKIP_PAGE_MAX
+            )
             prefs[Keys.VOLUME_UP_ACTION] = config.volumeUpAction.name
             prefs[Keys.VOLUME_DOWN_ACTION] = config.volumeDownAction.name
         }

@@ -2,8 +2,6 @@ package com.example.litemediaplayer.comic
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -42,11 +40,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.litemediaplayer.data.ComicFolder
+import com.example.litemediaplayer.lock.LockScreen
+import com.example.litemediaplayer.lock.LockTargetType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +56,7 @@ fun ComicFolderManagerScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var deleteTarget by remember { mutableStateOf<ComicFolder?>(null) }
+    var pendingUnlockFolderId by remember { mutableStateOf<Long?>(null) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -71,6 +70,19 @@ fun ComicFolderManagerScreen(
         val message = uiState.errorMessage ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(message)
         viewModel.consumeError()
+    }
+
+    pendingUnlockFolderId?.let { folderId ->
+        LockScreen(
+            targetType = LockTargetType.COMIC_FOLDER,
+            targetId = folderId,
+            onUnlocked = {
+                viewModel.toggleComicFolderLock(folderId)
+                pendingUnlockFolderId = null
+            },
+            onCancel = { pendingUnlockFolderId = null }
+        )
+        return
     }
 
     if (deleteTarget != null) {
@@ -140,7 +152,13 @@ fun ComicFolderManagerScreen(
                 ComicFolderManagerItem(
                     folder = folderUi.folder,
                     isLockEnabled = folderUi.isLockEnabled,
-                    onToggleLock = { viewModel.toggleComicFolderLock(folderUi.id) },
+                    onToggleLock = {
+                        if (folderUi.isLockEnabled) {
+                            pendingUnlockFolderId = folderUi.id
+                        } else {
+                            viewModel.toggleComicFolderLock(folderUi.id)
+                        }
+                    },
                     onDelete = { deleteTarget = folderUi.folder }
                 )
             }
@@ -165,8 +183,6 @@ private fun ComicFolderManagerItem(
     onToggleLock: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val context = LocalContext.current
-
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -195,42 +211,7 @@ private fun ComicFolderManagerItem(
 
             IconButton(
                 onClick = {
-                    if (isLockEnabled) {
-                        val targetActivity = context as? FragmentActivity
-                        if (targetActivity != null) {
-                            val executor = ContextCompat.getMainExecutor(targetActivity)
-                            val biometricPrompt = BiometricPrompt(
-                                targetActivity,
-                                executor,
-                                object : BiometricPrompt.AuthenticationCallback() {
-                                    override fun onAuthenticationSucceeded(
-                                        result: BiometricPrompt.AuthenticationResult
-                                    ) {
-                                        onToggleLock()
-                                    }
-
-                                    override fun onAuthenticationError(
-                                        errorCode: Int,
-                                        errString: CharSequence
-                                    ) {
-                                        // 認証キャンセル時は状態を変更しない
-                                    }
-                                }
-                            )
-                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                                .setTitle("ロック解除の認証")
-                                .setSubtitle("フォルダのロックを解除するには認証が必要です")
-                                .setAllowedAuthenticators(
-                                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                                )
-                                .build()
-                            biometricPrompt.authenticate(promptInfo)
-                        }
-                    } else {
-                        onToggleLock()
-                    }
+                    onToggleLock()
                 }
             ) {
                 Icon(
