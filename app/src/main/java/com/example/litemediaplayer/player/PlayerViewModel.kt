@@ -256,14 +256,9 @@ class PlayerViewModel @Inject constructor(
                 val newId = folderDao.insert(newFolder)
                 AppLogger.i("PlayerVM", "Added video folder: $displayName (id=$newId)")
 
-                // 同期スキャン: フォルダ追加直後に一覧を更新してから選択を反映
-                resolveVideoItems(folderUri.toString())
-
                 selectedFolderId.value = newId
                 refresh()
-
-                // メタデータは非同期で後追い読み込み
-                loadMetadataForFolder(folderUri.toString())
+                scanFolderAsync(newFolder.copy(id = newId))
             }.onFailure { error ->
                 AppLogger.e("PlayerVM", "Failed to add folder: $folderUri", error)
                 errorMessage.value = "フォルダ追加に失敗しました"

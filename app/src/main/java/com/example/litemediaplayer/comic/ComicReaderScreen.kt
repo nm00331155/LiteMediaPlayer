@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.litemediaplayer.settings.RotationSetting
 import kotlin.math.abs
 
 @Composable
@@ -365,6 +366,36 @@ fun ComicReaderScreen(
                         )
                     }
                     Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = { viewModel.updateRotationSetting(RotationSetting.PORTRAIT) }) {
+                        Text(
+                            text = "縦",
+                            color = if (uiState.rotationSetting == RotationSetting.PORTRAIT) {
+                                Color.Yellow
+                            } else {
+                                Color.White
+                            }
+                        )
+                    }
+                    TextButton(onClick = { viewModel.updateRotationSetting(RotationSetting.LANDSCAPE) }) {
+                        Text(
+                            text = "横",
+                            color = if (uiState.rotationSetting == RotationSetting.LANDSCAPE) {
+                                Color.Yellow
+                            } else {
+                                Color.White
+                            }
+                        )
+                    }
+                    TextButton(onClick = { viewModel.updateRotationSetting(RotationSetting.AUTO) }) {
+                        Text(
+                            text = "自動",
+                            color = if (uiState.rotationSetting == RotationSetting.AUTO) {
+                                Color.Yellow
+                            } else {
+                                Color.White
+                            }
+                        )
+                    }
                     IconButton(
                         onClick = { isZoneEditMode = !isZoneEditMode }
                     ) {
@@ -389,7 +420,7 @@ fun ComicReaderScreen(
                         itemsIndexed(pages, key = { _, page -> page.index }) { _, page ->
                             PageRenderer(
                                 model = page.model,
-                                maxZoom = uiState.settings.zoomMax,
+                                doubleTapZoomScale = uiState.settings.doubleTapZoomScale,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(uiState.settings.pagePaddingDp.dp)
@@ -406,7 +437,7 @@ fun ComicReaderScreen(
                             pages = pages,
                             currentPage = uiState.currentPage,
                             isLandscape = isLandscape,
-                            maxZoom = uiState.settings.zoomMax,
+                            doubleTapZoomScale = uiState.settings.doubleTapZoomScale,
                             pagePaddingDp = uiState.settings.pagePaddingDp
                         )
                     }
@@ -489,7 +520,7 @@ fun ComicReaderScreen(
                             ) {
                                 PageRenderer(
                                     model = currentPage.model,
-                                    maxZoom = uiState.settings.zoomMax,
+                                    doubleTapZoomScale = uiState.settings.doubleTapZoomScale,
                                     onZoomStateChange = { zoomed ->
                                         isCurrentPageZoomed = zoomed
                                     },
@@ -1101,7 +1132,7 @@ private fun SpreadModeContent(
     pages: List<ComicPage>,
     currentPage: Int,
     isLandscape: Boolean,
-    maxZoom: Float,
+    doubleTapZoomScale: Float,
     pagePaddingDp: Int
 ) {
     val first = pages.getOrNull(currentPage)
@@ -1114,7 +1145,7 @@ private fun SpreadModeContent(
     if (!isLandscape || second == null) {
         PageRenderer(
             model = firstPage.model,
-            maxZoom = maxZoom,
+            doubleTapZoomScale = doubleTapZoomScale,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(pagePaddingDp.dp)
@@ -1125,7 +1156,7 @@ private fun SpreadModeContent(
     Row(modifier = Modifier.fillMaxSize()) {
         PageRenderer(
             model = firstPage.model,
-            maxZoom = maxZoom,
+            doubleTapZoomScale = doubleTapZoomScale,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxSize()
@@ -1133,7 +1164,7 @@ private fun SpreadModeContent(
         )
         PageRenderer(
             model = second.model,
-            maxZoom = maxZoom,
+            doubleTapZoomScale = doubleTapZoomScale,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxSize()

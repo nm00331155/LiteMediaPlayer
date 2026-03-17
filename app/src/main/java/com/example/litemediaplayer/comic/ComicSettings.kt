@@ -35,9 +35,11 @@ enum class ReaderMode {
 }
 
 enum class GridSize(val minDp: Int, val label: String) {
+    TINY(72, "極小"),
     SMALL(90, "小"),
     MEDIUM(120, "中"),
-    LARGE(170, "大")
+    LARGE(170, "大"),
+    XLARGE(220, "極大")
 }
 
 enum class TrimSensitivity(val threshold: Float) {
@@ -55,7 +57,7 @@ data class ComicReaderSettings(
     val backgroundColorArgb: Int = 0xFF000000.toInt(),
     val pagePaddingDp: Int = 0,
     val blueLightFilterEnabled: Boolean = false,
-    val zoomMax: Float = 5f,
+    val doubleTapZoomScale: Float = 2f,
     val autoSplitEnabled: Boolean = true,
     val splitThreshold: Float = 1.3f,
     val smartSplitEnabled: Boolean = true,
@@ -74,8 +76,8 @@ object ComicSettingsDefaults {
 
     const val ANIMATION_SPEED_MIN = 100
     const val ANIMATION_SPEED_MAX = 2000
-    const val ZOOM_MAX_MIN = 2f
-    const val ZOOM_MAX_MAX = 10f
+    const val DOUBLE_TAP_ZOOM_SCALE_MIN = 1.5f
+    const val DOUBLE_TAP_ZOOM_SCALE_MAX = 4f
     const val SPLIT_THRESHOLD_MIN = 1f
     const val SPLIT_THRESHOLD_MAX = 4f
     const val SPLIT_OFFSET_MIN = -0.10f
@@ -123,9 +125,13 @@ class ComicSettings @Inject constructor(
                 backgroundColorArgb = prefs[Keys.BACKGROUND_COLOR_ARGB] ?: 0xFF000000.toInt(),
                 pagePaddingDp = prefs[Keys.PAGE_PADDING_DP] ?: 0,
                 blueLightFilterEnabled = prefs[Keys.BLUE_LIGHT_FILTER] ?: false,
-                zoomMax = (prefs[Keys.ZOOM_MAX] ?: 5f).coerceIn(
-                    ComicSettingsDefaults.ZOOM_MAX_MIN,
-                    ComicSettingsDefaults.ZOOM_MAX_MAX
+                doubleTapZoomScale = (
+                    prefs[Keys.DOUBLE_TAP_ZOOM_SCALE]
+                        ?: prefs[Keys.ZOOM_MAX]
+                        ?: 2f
+                    ).coerceIn(
+                    ComicSettingsDefaults.DOUBLE_TAP_ZOOM_SCALE_MIN,
+                    ComicSettingsDefaults.DOUBLE_TAP_ZOOM_SCALE_MAX
                 ),
                 autoSplitEnabled = prefs[Keys.AUTO_SPLIT_ENABLED] ?: true,
                 splitThreshold = (prefs[Keys.SPLIT_THRESHOLD] ?: 1.3f).coerceIn(
@@ -342,13 +348,17 @@ class ComicSettings @Inject constructor(
         }
     }
 
-    suspend fun updateZoomMax(maxZoom: Float) {
+    suspend fun updateDoubleTapZoomScale(scale: Float) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.ZOOM_MAX] = maxZoom.coerceIn(
-                ComicSettingsDefaults.ZOOM_MAX_MIN,
-                ComicSettingsDefaults.ZOOM_MAX_MAX
+            prefs[Keys.DOUBLE_TAP_ZOOM_SCALE] = scale.coerceIn(
+                ComicSettingsDefaults.DOUBLE_TAP_ZOOM_SCALE_MIN,
+                ComicSettingsDefaults.DOUBLE_TAP_ZOOM_SCALE_MAX
             )
         }
+    }
+
+    suspend fun updateZoomMax(maxZoom: Float) {
+        updateDoubleTapZoomScale(maxZoom)
     }
 
     suspend fun updateVerticalScrollSpeed(speed: Float) {
@@ -407,6 +417,8 @@ private object Keys {
     val BACKGROUND_COLOR_ARGB: Preferences.Key<Int> = intPreferencesKey("background_color_argb")
     val PAGE_PADDING_DP: Preferences.Key<Int> = intPreferencesKey("page_padding_dp")
     val BLUE_LIGHT_FILTER: Preferences.Key<Boolean> = booleanPreferencesKey("blue_light_filter")
+    val DOUBLE_TAP_ZOOM_SCALE: Preferences.Key<Float> =
+        floatPreferencesKey("double_tap_zoom_scale")
     val ZOOM_MAX: Preferences.Key<Float> = floatPreferencesKey("zoom_max")
     val AUTO_SPLIT_ENABLED: Preferences.Key<Boolean> = booleanPreferencesKey("auto_split_enabled")
     val SPLIT_THRESHOLD: Preferences.Key<Float> = floatPreferencesKey("split_threshold")

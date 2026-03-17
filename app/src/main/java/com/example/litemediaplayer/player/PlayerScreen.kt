@@ -385,6 +385,8 @@ fun PlayerPlaybackScreen(
     var lastInteractionAtMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var sliderWidthPx by remember { mutableStateOf(0) }
     var resumePlaybackAfterSliderDrag by remember { mutableStateOf(false) }
+    var gestureSeekBasePositionMs by remember(videoUri) { mutableLongStateOf(0L) }
+    var resumePlaybackAfterGestureSeek by remember(videoUri) { mutableStateOf(false) }
     var seekPreviewBitmap by remember(videoUri) { mutableStateOf<Bitmap?>(null) }
     var seekPreviewVisible by remember(videoUri) { mutableStateOf(false) }
     var previewRequestPositionMs by remember(videoUri) { mutableLongStateOf(-1L) }
@@ -395,6 +397,15 @@ fun PlayerPlaybackScreen(
     fun registerInteraction() {
         controlsVisible = true
         lastInteractionAtMs = SystemClock.elapsedRealtime()
+    }
+
+    fun applyGestureSeekDelta(deltaMs: Long) {
+        val targetPositionMs = (gestureSeekBasePositionMs + deltaMs)
+            .coerceAtLeast(0L)
+            .coerceAtMost(durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE)
+        currentPositionMs = targetPositionMs
+        sliderValue = targetPositionMs.toFloat()
+        exoPlayer.seekTo(targetPositionMs)
     }
 
     PageSettingsSheet(
@@ -672,14 +683,26 @@ fun PlayerPlaybackScreen(
         } else {
             GestureOverlay(
                 seekIntervalSeconds = uiState.seekIntervalSeconds,
-                onSeekCommit = { deltaMs ->
+                onSeekStart = {
                     registerInteraction()
                     volumeAccumulator = 0f
                     brightnessAccumulator = 0f
-                    val seekTo = (exoPlayer.currentPosition + deltaMs)
-                        .coerceAtLeast(0L)
-                        .coerceAtMost(durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE)
-                    exoPlayer.seekTo(seekTo)
+                    gestureSeekBasePositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    resumePlaybackAfterGestureSeek = exoPlayer.isPlaying
+                    if (resumePlaybackAfterGestureSeek) {
+                        exoPlayer.pause()
+                    }
+                },
+                onSeekPreview = { deltaMs ->
+                    applyGestureSeekDelta(deltaMs)
+                },
+                onSeekCommit = { deltaMs ->
+                    registerInteraction()
+                    applyGestureSeekDelta(deltaMs)
+                    if (resumePlaybackAfterGestureSeek) {
+                        exoPlayer.play()
+                    }
+                    resumePlaybackAfterGestureSeek = false
                 },
                 onVolumeDelta = { normalizedDelta ->
                     registerInteraction()

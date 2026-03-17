@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -128,7 +129,7 @@ fun ComicShelfScreen(
             onAnimationChange = viewModel::updatePageAnimation,
             onAnimationSpeedChange = viewModel::updateAnimationSpeed,
             onBlueLightChange = viewModel::updateBlueLightFilter,
-            onZoomMaxChange = viewModel::updateZoomMax,
+            onDoubleTapZoomScaleChange = viewModel::updateDoubleTapZoomScale,
             onAutoSplitChange = viewModel::updateAutoSplit,
             onSplitThresholdChange = viewModel::updateSplitThreshold,
             onSmartSplitChange = viewModel::updateSmartSplit,
@@ -138,7 +139,6 @@ fun ComicShelfScreen(
             onTrimSafetyMarginChange = viewModel::updateTrimSafetyMargin,
             onTrimSensitivityChange = viewModel::updateTrimSensitivity,
             onTouchZoneChange = viewModel::updateTouchZoneConfig,
-            registeredSyncDeviceCount = uiState.registeredSyncDeviceCount,
             onShareProgress = {
                 coroutineScope.launch {
                     val shareIntent = viewModel.buildProgressShareIntent() ?: return@launch
@@ -283,55 +283,13 @@ fun ComicShelfScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(uiState.folders, key = { it.id }) { folder ->
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.selectComicFolder(folder.id) }
-                        ) {
-                            AsyncImage(
-                                model = folder.coverUri,
-                                contentDescription = null,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(3f / 4f)
-                                    .background(Color.Black)
-                            )
-                            Column(
-                                modifier = Modifier.padding(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                if (folder.isLockEnabled) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Lock,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(14.dp),
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                        Text(
-                                            text = " ロック中",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = folder.displayName,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    maxLines = 2
-                                )
-                                Text(
-                                    text = "${folder.bookCount} 冊",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
+                        ComicLibraryCard(
+                            title = folder.displayName,
+                            subtitle = "${folder.bookCount} 冊",
+                            coverModel = folder.coverUri,
+                            isLocked = folder.isLockEnabled,
+                            onClick = { viewModel.selectComicFolder(folder.id) }
+                        )
                     }
                 }
             } else {
@@ -350,47 +308,90 @@ fun ComicShelfScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(displayBooks, key = { it.id }) { book ->
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onOpenBook(book.id) }
-                        ) {
-                            AsyncImage(
-                                model = book.coverUri,
-                                contentDescription = null,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(3f / 4f)
-                                    .background(Color.Black)
-                            )
-                            Column(
-                                modifier = Modifier.padding(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Text(
-                                    text = book.title,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    maxLines = 2
-                                )
-                                Text(
-                                    text = if (book.totalPages > 0) {
-                                        "${book.lastReadPage + 1} / ${book.totalPages} ページ"
-                                    } else {
-                                        "未読"
-                                    },
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
+                        ComicLibraryCard(
+                            title = book.title,
+                            subtitle = if (book.totalPages > 0) {
+                                "${book.lastReadPage + 1} / ${book.totalPages} ページ"
+                            } else {
+                                "未読"
+                            },
+                            coverModel = book.coverUri,
+                            onClick = { onOpenBook(book.id) }
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ComicLibraryCard(
+    title: String,
+    subtitle: String,
+    coverModel: Any?,
+    onClick: () -> Unit,
+    isLocked: Boolean = false
+) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(3f / 4f)
+                .background(Color.Black)
+        ) {
+            AsyncImage(
+                model = coverModel,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(92.dp)
+                .padding(8.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Box(modifier = Modifier.height(18.dp)) {
+                if (isLocked) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = " ロック中",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -404,7 +405,7 @@ private fun ComicSettingsContent(
     onAnimationChange: (PageAnimation) -> Unit,
     onAnimationSpeedChange: (Int) -> Unit,
     onBlueLightChange: (Boolean) -> Unit,
-    onZoomMaxChange: (Float) -> Unit,
+    onDoubleTapZoomScaleChange: (Float) -> Unit,
     onAutoSplitChange: (Boolean) -> Unit,
     onSplitThresholdChange: (Float) -> Unit,
     onSmartSplitChange: (Boolean) -> Unit,
@@ -414,7 +415,6 @@ private fun ComicSettingsContent(
     onTrimSafetyMarginChange: (Int) -> Unit,
     onTrimSensitivityChange: (TrimSensitivity) -> Unit,
     onTouchZoneChange: (TouchZoneConfig) -> Unit,
-    registeredSyncDeviceCount: Int,
     onShareProgress: () -> Unit,
     onImportProgress: () -> Unit
 ) {
@@ -427,11 +427,7 @@ private fun ComicSettingsContent(
     )
 
     Text(
-        text = if (registeredSyncDeviceCount > 0) {
-            "共有ボタンで登録端末へ直接送信します。未到達時はJSONファイル共有に切り替えます。登録済み: ${registeredSyncDeviceCount}台"
-        } else {
-            "登録端末がないため、共有ボタンはJSONファイル共有を開きます。端末登録は設定タブの進捗共有から行えます。"
-        },
+        text = "共有ボタンでJSONファイルを出力し、取り込みボタンで他端末の進捗を読み込めます。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(bottom = 8.dp)
@@ -529,14 +525,14 @@ private fun ComicSettingsContent(
     )
 
     FloatSliderSetting(
-        label = "ズーム上限",
-        value = settings.zoomMax,
-        min = ComicSettingsDefaults.ZOOM_MAX_MIN,
-        max = ComicSettingsDefaults.ZOOM_MAX_MAX,
+        label = "ダブルタップ倍率",
+        value = settings.doubleTapZoomScale,
+        min = ComicSettingsDefaults.DOUBLE_TAP_ZOOM_SCALE_MIN,
+        max = ComicSettingsDefaults.DOUBLE_TAP_ZOOM_SCALE_MAX,
         suffix = "x",
         decimals = 1,
-        onValueChange = onZoomMaxChange,
-        onReset = { onZoomMaxChange(defaultSettings.zoomMax) }
+        onValueChange = onDoubleTapZoomScaleChange,
+        onReset = { onDoubleTapZoomScaleChange(defaultSettings.doubleTapZoomScale) }
     )
 
     ResettableSectionHeader(

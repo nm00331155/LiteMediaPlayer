@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -16,8 +17,12 @@ import com.example.litemediaplayer.lock.LockAuthMethod
 import com.example.litemediaplayer.lock.LockTargetType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.ArrayDeque
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -167,12 +172,63 @@ class FolderManagerViewModel @Inject constructor(
     }
 
     private fun countVideosInFolder(folder: VideoFolder): Int {
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(folder.treeUri)) ?: return 0
-        return root.listFiles().count { file ->
-            file.isFile && file.name
-                ?.substringAfterLast('.', "")
-                ?.lowercase() in SUPPORTED_VIDEO_EXTENSIONS
+        val treeUri = Uri.parse(folder.treeUri)
+        val treeDocumentId = runCatching {
+            DocumentsContract.getTreeDocumentId(treeUri)
+        }.getOrElse {
+            AppLogger.w("FolderManager", "Invalid tree uri: ${folder.treeUri}", it)
+            return 0
         }
+
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+        val queue = ArrayDeque<Uri>()
+        queue.add(DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocumentId))
+        var count = 0
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            runCatching {
+                context.contentResolver.query(current, projection, null, null, null)?.use { cursor ->
+                    val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+
+                    while (cursor.moveToNext()) {
+                        val documentId = if (idCol >= 0 && !cursor.isNull(idCol)) {
+                            cursor.getString(idCol)
+                        } else {
+                            continue
+                        }
+                        val name = if (nameCol >= 0 && !cursor.isNull(nameCol)) {
+                            cursor.getString(nameCol)
+                        } else {
+                            ""
+                        }
+                        val mimeType = if (mimeCol >= 0 && !cursor.isNull(mimeCol)) {
+                            cursor.getString(mimeCol)
+                        } else {
+                            ""
+                        }
+
+                        if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            queue.add(
+                                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
+                            )
+                        } else if (name.substringAfterLast('.', "").lowercase() in SUPPORTED_VIDEO_EXTENSIONS) {
+                            count += 1
+                        }
+                    }
+                }
+            }.onFailure { error ->
+                AppLogger.w("FolderManager", "Folder count query failed: $current", error)
+            }
+        }
+
+        return count
     }
 
     private fun refreshVideoCounts(folders: List<VideoFolder>) {
@@ -182,16 +238,15 @@ class FolderManagerViewModel @Inject constructor(
                 return@launch
             }
 
-            _videoCounts.update { existing ->
-                existing.filterKeys { key -> folders.any { it.id == key } }
-            }
-
             val start = SystemClock.elapsedRealtime()
-            folders.forEach { folder ->
-                _videoCounts.update { current ->
-                    current + (folder.id to countVideosInFolder(folder))
-                }
+            val counts = coroutineScope {
+                folders.map { folder ->
+                    async {
+                        folder.id to countVideosInFolder(folder)
+                    }
+                }.awaitAll().toMap()
             }
+            _videoCounts.value = counts
 
             AppLogger.d(
                 "FolderManager",

@@ -24,6 +24,7 @@ import com.example.litemediaplayer.lock.LockAuthMethod
 import com.example.litemediaplayer.lock.LockManager
 import com.example.litemediaplayer.lock.LockTargetType
 import com.example.litemediaplayer.settings.AppSettingsStore
+import com.example.litemediaplayer.settings.RotationSetting
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -53,7 +54,8 @@ import kotlinx.coroutines.withContext
 private val SUPPORTED_IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
 private val SUPPORTED_ARCHIVE_EXTENSIONS = setOf("zip", "cbz", "cbr", "rar")
 private const val COMIC_PROGRESS_EXPORT_PREFIX = "comic_progress_sync_"
-private const val INITIAL_PAGE_PREFETCH_COUNT = 6
+private const val INITIAL_PAGE_PREFETCH_COUNT = 2
+private const val INITIAL_PAGE_SOURCE_BATCH_SIZE = 8
 private const val BACKGROUND_PAGE_SOURCE_BATCH_SIZE = 12
 
 data class ComicPage(
@@ -86,11 +88,11 @@ data class ComicReaderUiState(
     val isLoadingBook: Boolean = false,
     val isBookFullyLoaded: Boolean = true,
     val settings: ComicReaderSettings = ComicReaderSettings(),
+    val rotationSetting: RotationSetting = RotationSetting.AUTO,
     val fiveTapEnabled: Boolean = true,
     val fiveTapAuthRequired: Boolean = true,
     val hiddenUnlockMethod: LockAuthMethod = LockAuthMethod.PIN,
     val showHiddenLocked: Boolean = false,
-    val registeredSyncDeviceCount: Int = 0,
     val errorMessage: String? = null,
     val statusMessage: String? = null
 )
@@ -122,7 +124,6 @@ class ComicReaderViewModel @Inject constructor(
     private val comicSettings: ComicSettings,
     private val comicProgressRepository: ComicProgressRepository,
     private val comicProgressSyncStore: ComicProgressSyncStore,
-    private val comicProgressLanSyncManager: ComicProgressLanSyncManager,
     private val pageProcessor: PageProcessor,
     private val lockConfigDao: LockConfigDao,
     private val lockManager: LockManager,
@@ -216,19 +217,13 @@ class ComicReaderViewModel @Inject constructor(
             appSettingsStore.settingsFlow.collect { appSettings ->
                 _uiState.update {
                     it.copy(
+                        rotationSetting = appSettings.rotationSetting,
                         fiveTapEnabled = appSettings.fiveTapEnabled,
                         fiveTapAuthRequired = appSettings.fiveTapAuthRequired,
                         hiddenUnlockMethod = LockAuthMethod.fromStoredValue(
                             appSettings.lockAuthMethod
                         )
                     )
-                }
-            }
-        }
-        viewModelScope.launch {
-            comicProgressSyncStore.settingsFlow.collect { syncSettings ->
-                _uiState.update {
-                    it.copy(registeredSyncDeviceCount = syncSettings.registeredDevices.size)
                 }
             }
         }
@@ -529,7 +524,11 @@ class ComicReaderViewModel @Inject constructor(
                 val settings = _uiState.value.settings
                 if (shouldPreprocessPages(settings)) {
                     val progressiveResult = withContext(Dispatchers.IO) {
-                        openBookProgressively(book = book, settings = settings)
+                        openBookProgressively(
+                            book = book,
+                            settings = settings,
+                            targetPageIndex = storedPage
+                        )
                     }
 
                     if (loadGeneration != pageLoadGeneration) {
@@ -743,31 +742,6 @@ class ComicReaderViewModel @Inject constructor(
                 return@withContext null
             }
 
-            var switchedFromLanFallback = false
-            if (syncSettings.registeredDevices.isNotEmpty()) {
-                val pushResult = comicProgressLanSyncManager.pushPayloadToRegisteredDevices(
-                    payloadText = payload.toString()
-                )
-                if (pushResult.successCount > 0) {
-                    val suffix = if (pushResult.failureCount > 0) {
-                        "（${pushResult.failureCount}台は未到達）"
-                    } else {
-                        ""
-                    }
-                    _uiState.update {
-                        it.copy(
-                            statusMessage = "登録端末へ進捗を送信しました$suffix",
-                            errorMessage = null
-                        )
-                    }
-                    return@withContext null
-                }
-
-                if (pushResult.attemptedCount > 0) {
-                    switchedFromLanFallback = true
-                }
-            }
-
             val exportDir = ensureProgressShareDirectory()
             exportDir.listFiles()
                 ?.filter { file -> file.isFile && file.name.startsWith(COMIC_PROGRESS_EXPORT_PREFIX) }
@@ -790,11 +764,7 @@ class ComicReaderViewModel @Inject constructor(
 
             _uiState.update {
                 it.copy(
-                    statusMessage = if (switchedFromLanFallback) {
-                        "LAN共有に失敗したため、進捗共有ファイルを作成しました"
-                    } else {
-                        "進捗共有ファイルを作成しました"
-                    },
+                    statusMessage = "進捗共有ファイルを作成しました",
                     errorMessage = null
                 )
             }
@@ -1019,9 +989,21 @@ class ComicReaderViewModel @Inject constructor(
         }
     }
 
+    fun updateDoubleTapZoomScale(scale: Float) {
+        viewModelScope.launch {
+            comicSettings.updateDoubleTapZoomScale(scale)
+        }
+    }
+
     fun updateZoomMax(maxZoom: Float) {
         viewModelScope.launch {
-            comicSettings.updateZoomMax(maxZoom)
+            comicSettings.updateDoubleTapZoomScale(maxZoom)
+        }
+    }
+
+    fun updateRotationSetting(setting: RotationSetting) {
+        viewModelScope.launch {
+            appSettingsStore.updateRotationSetting(setting)
         }
     }
 
@@ -1285,7 +1267,8 @@ class ComicReaderViewModel @Inject constructor(
 
     private suspend fun openBookProgressively(
         book: ComicBook,
-        settings: ComicReaderSettings
+        settings: ComicReaderSettings,
+        targetPageIndex: Int
     ): ProgressivePageLoadResult {
         val sources = when (book.sourceType) {
             "FOLDER" -> loadFolderPageSources(book.sourceUri)
@@ -1301,29 +1284,27 @@ class ComicReaderViewModel @Inject constructor(
             )
         }
 
-        val targetLoadedPages = (book.lastReadPage.coerceAtLeast(0) + INITIAL_PAGE_PREFETCH_COUNT + 1)
+        val targetLoadedPages = (targetPageIndex.coerceAtLeast(0) + INITIAL_PAGE_PREFETCH_COUNT + 1)
             .coerceAtLeast(1)
         val initialPages = mutableListOf<ComicPage>()
         var nextIndex = 0
         var consumedSources = 0
 
-        for (source in sources) {
-            val processedUris = materializePageSource(source, settings)
-            for (processedUri in processedUris) {
-                initialPages += ComicPage(
-                    index = nextIndex,
-                    model = processedUri,
-                    sourceName = source.sourceName
-                )
-                nextIndex += 1
-            }
-            consumedSources += 1
+        for (chunk in sources.chunked(INITIAL_PAGE_SOURCE_BATCH_SIZE)) {
+            val batchPages = buildPageModelsFromSources(
+                sources = chunk,
+                settings = settings,
+                startingPageIndex = nextIndex
+            )
+            initialPages += batchPages
+            nextIndex += batchPages.size
+            consumedSources += chunk.size
             if (initialPages.size >= targetLoadedPages) {
                 break
             }
         }
 
-        val totalPageHint = maxOf(book.totalPages, sources.size, initialPages.size)
+        val totalPageHint = maxOf(book.totalPages, sources.size, initialPages.size, targetLoadedPages)
         AppLogger.i(
             "ComicReader",
             "Prepared ${initialPages.size} initial pages from $consumedSources/${sources.size} sources; " +
@@ -1648,8 +1629,6 @@ class ComicReaderViewModel @Inject constructor(
                 append(settings.trimSafetyMargin)
                 append('|')
                 append(settings.trimSensitivity.name)
-                append('|')
-                append(settings.zoomMax)
             }
         )
     }

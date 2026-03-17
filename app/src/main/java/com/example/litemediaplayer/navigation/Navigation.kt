@@ -8,10 +8,8 @@ import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -35,8 +33,6 @@ import com.example.litemediaplayer.comic.ComicReaderScreen
 import com.example.litemediaplayer.R
 import com.example.litemediaplayer.comic.ComicFolderManagerScreen
 import com.example.litemediaplayer.comic.ComicShelfScreen
-import com.example.litemediaplayer.explorer.ExplorerManagementScreen
-import com.example.litemediaplayer.network.NetworkBrowserScreen
 import com.example.litemediaplayer.player.FolderManagerScreen
 import com.example.litemediaplayer.player.PlayerPlaybackScreen
 import com.example.litemediaplayer.player.PlayerScreen
@@ -52,14 +48,13 @@ enum class MainTab(
 ) {
     COMIC("comic", R.string.tab_comic, Icons.AutoMirrored.Outlined.MenuBook, Icons.AutoMirrored.Filled.MenuBook),
     PLAYER("player", R.string.tab_player, Icons.Outlined.PlayCircle, Icons.Filled.PlayCircle),
-    NETWORK("network", R.string.tab_explorer, Icons.Outlined.Wifi, Icons.Filled.Wifi),
     SETTINGS("settings", R.string.tab_settings, Icons.Outlined.Settings, Icons.Filled.Settings)
 }
 
 @Composable
 fun AppNavigation(appSettingsStore: AppSettingsStore) {
     val navController = rememberNavController()
-    val tabs = listOf(MainTab.COMIC, MainTab.PLAYER, MainTab.NETWORK, MainTab.SETTINGS)
+    val tabs = listOf(MainTab.COMIC, MainTab.PLAYER, MainTab.SETTINGS)
     val coroutineScope = rememberCoroutineScope()
 
     Scaffold(
@@ -76,10 +71,8 @@ fun AppNavigation(appSettingsStore: AppSettingsStore) {
                 currentDestination?.route?.startsWith("comic_folder_manager") == true
             val isPlaybackRoute = currentDestination?.route?.startsWith("player_playback") == true
             val isFolderRoute = currentDestination?.route?.startsWith("player_folders") == true
-            val isNetworkBrowserRoute =
-                currentDestination?.route?.startsWith("network_browser") == true
 
-            if (!isReaderRoute && !isComicFolderManagerRoute && !isPlaybackRoute && !isFolderRoute && !isNetworkBrowserRoute) {
+            if (!isReaderRoute && !isComicFolderManagerRoute && !isPlaybackRoute && !isFolderRoute) {
                 NavigationBar {
                     tabs.forEach { tab ->
                         val selected = currentDestination
@@ -196,27 +189,6 @@ fun AppNavigation(appSettingsStore: AppSettingsStore) {
                             launchSingleTop = true
                         }
                     }
-                )
-            }
-
-            composable(MainTab.NETWORK.route) {
-                ExplorerManagementScreen(
-                    onOpenNetworkExplorer = {
-                        navController.navigate("network_browser")
-                    }
-                )
-            }
-
-            composable("network_browser") {
-                NetworkBrowserScreen(
-                    onPlayVideo = { streamUri ->
-                        val encoded = Base64.encodeToString(
-                            streamUri.toByteArray(Charsets.UTF_8),
-                            Base64.URL_SAFE or Base64.NO_WRAP
-                        )
-                        navController.navigate("player_playback/$encoded")
-                    },
-                    onBack = { navController.popBackStack() }
                 )
             }
 

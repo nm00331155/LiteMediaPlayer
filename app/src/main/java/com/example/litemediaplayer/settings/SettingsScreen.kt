@@ -28,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.litemediaplayer.comic.ComicProgressLanSyncManager
 import com.example.litemediaplayer.core.ui.LogViewerSheet
 
 @Composable
@@ -40,7 +39,6 @@ fun SettingsScreen(
     var memoryExpanded by rememberSaveable { mutableStateOf(false) }
     var generalExpanded by rememberSaveable { mutableStateOf(true) }
     var appInfoExpanded by rememberSaveable { mutableStateOf(false) }
-    var syncExpanded by rememberSaveable { mutableStateOf(true) }
     var showLogViewer by rememberSaveable { mutableStateOf(false) }
 
     LazyColumn(
@@ -90,82 +88,6 @@ fun SettingsScreen(
                     },
                     onSelect = viewModel::updateLanguage
                 )
-            }
-        }
-
-        item {
-            SectionCard(
-                title = "進捗共有",
-                expanded = syncExpanded,
-                onToggle = { syncExpanded = !syncExpanded }
-            ) {
-                Text(text = "この端末")
-                Text(
-                    text = buildString {
-                        append(uiState.syncSettings.localDeviceName)
-                        append(" / ")
-                        append(uiState.localSyncEndpoint?.host ?: "ネットワーク未接続")
-                        append(":")
-                        append(uiState.localSyncEndpoint?.port ?: ComicProgressLanSyncManager.DEFAULT_HTTP_PORT)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "コミック設定の共有ボタンは、登録済み端末がある場合に同一ネットワークへ直接送信します。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Button(
-                    onClick = viewModel::refreshComicSyncDiscovery,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = if (uiState.syncDiscoveryInProgress) {
-                            "同一ネットワーク端末を検出中..."
-                        } else {
-                            "同一ネットワーク端末を検出"
-                        }
-                    )
-                }
-
-                Text(text = "検出端末")
-                if (uiState.discoveredSyncDevices.isEmpty()) {
-                    Text(
-                        text = "検出できた端末はありません",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    val registeredIds = uiState.syncSettings.registeredDevices.map { it.deviceId }.toSet()
-                    uiState.discoveredSyncDevices.forEach { device ->
-                        SyncDeviceRow(
-                            name = device.name,
-                            endpoint = "${device.host}:${device.port}",
-                            actionLabel = if (device.deviceId in registeredIds) "更新" else "登録",
-                            onAction = { viewModel.registerComicSyncDevice(device) }
-                        )
-                    }
-                }
-
-                Text(text = "登録済み端末")
-                if (uiState.syncSettings.registeredDevices.isEmpty()) {
-                    Text(
-                        text = "登録済み端末はありません",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    uiState.syncSettings.registeredDevices.forEach { device ->
-                        SyncDeviceRow(
-                            name = device.name,
-                            endpoint = "${device.host}:${device.port}",
-                            actionLabel = "解除",
-                            onAction = { viewModel.removeComicSyncDevice(device.deviceId) }
-                        )
-                    }
-                }
             }
         }
 
@@ -234,36 +156,6 @@ fun SettingsScreen(
         visible = showLogViewer,
         onDismiss = { showLogViewer = false }
     )
-}
-
-@Composable
-private fun SyncDeviceRow(
-    name: String,
-    endpoint: String,
-    actionLabel: String,
-    onAction: () -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.72f)
-                .padding(end = 8.dp)
-        ) {
-            Text(text = name)
-            Text(
-                text = endpoint,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Button(onClick = onAction) {
-            Text(text = actionLabel)
-        }
-    }
 }
 
 @Composable

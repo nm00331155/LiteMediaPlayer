@@ -1,9 +1,8 @@
 package com.example.litemediaplayer.comic
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.transformable
-import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -27,7 +26,7 @@ import coil.compose.AsyncImage
 fun PageRenderer(
     model: Any,
     modifier: Modifier = Modifier,
-    maxZoom: Float = 5f,
+    doubleTapZoomScale: Float = 2f,
     onZoomStateChange: (Boolean) -> Unit = {},
     doubleTapRequest: Offset? = null,
     onDoubleTapRequestConsumed: () -> Unit = {}
@@ -63,7 +62,7 @@ fun PageRenderer(
             scale = 1f
             offset = Offset.Zero
         } else {
-            val targetScale = 1.5f.coerceAtMost(maxZoom).coerceAtLeast(1f)
+            val targetScale = doubleTapZoomScale.coerceAtLeast(1f)
             val center = Offset(viewportSize.width / 2f, viewportSize.height / 2f)
             val targetOffset = (center - tapOffset) * (targetScale - 1f)
 
@@ -87,28 +86,26 @@ fun PageRenderer(
         onDoubleTapRequestConsumed()
     }
 
-    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-        val updatedScale = (scale * zoomChange).coerceIn(1f, maxZoom)
-        scale = updatedScale
-        reportZoomState(updatedScale)
-
-        offset = if (updatedScale > 1f) {
-            clampOffset(offset + panChange, updatedScale)
-        } else {
-            Offset.Zero
-        }
-    }
-
     Box(
         modifier = modifier
             .background(Color.Black)
             .onSizeChanged { viewportSize = it }
-            .pointerInput(maxZoom) {
+            .pointerInput(doubleTapZoomScale) {
                 detectTapGestures(
                     onDoubleTap = { tapOffset ->
                         toggleZoomAt(tapOffset)
                     }
                 )
+            }
+            .pointerInput(scale, viewportSize) {
+                detectDragGestures { change, dragAmount ->
+                    if (scale <= 1f) {
+                        return@detectDragGestures
+                    }
+
+                    change.consume()
+                    offset = clampOffset(offset + dragAmount, scale)
+                }
             }
     ) {
         AsyncImage(
@@ -123,7 +120,6 @@ fun PageRenderer(
                     translationX = offset.x
                     translationY = offset.y
                 }
-                .transformable(state = transformState)
         )
     }
 }

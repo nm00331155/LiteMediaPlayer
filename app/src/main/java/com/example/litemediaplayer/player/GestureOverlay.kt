@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -38,6 +39,8 @@ data class GestureZoneConfig(
 @Composable
 fun GestureOverlay(
     seekIntervalSeconds: Int,
+    onSeekStart: () -> Unit = {},
+    onSeekPreview: (Long) -> Unit = {},
     onSeekCommit: (Long) -> Unit,
     onVolumeDelta: (Float) -> Int,
     onBrightnessDelta: (Float) -> Float,
@@ -54,7 +57,10 @@ fun GestureOverlay(
     var overlayText by remember { mutableStateOf<String?>(null) }
     var gestureMode by remember { mutableStateOf<GestureMode?>(null) }
     var seekDistanceX by remember { mutableFloatStateOf(0f) }
+    var lastSeekDeltaMs by remember { mutableLongStateOf(0L) }
 
+    val currentSeekStart by rememberUpdatedState(onSeekStart)
+    val currentSeekPreview by rememberUpdatedState(onSeekPreview)
     val currentSeekCommit by rememberUpdatedState(onSeekCommit)
     val currentVolumeDelta by rememberUpdatedState(onVolumeDelta)
     val currentBrightnessDelta by rememberUpdatedState(onBrightnessDelta)
@@ -95,24 +101,26 @@ fun GestureOverlay(
                             else -> null
                         }
                         seekDistanceX = 0f
+                        lastSeekDeltaMs = 0L
+                        if (gestureMode == GestureMode.Seek) {
+                            currentSeekStart()
+                        }
                     },
                     onDragEnd = {
                         if (gestureMode == GestureMode.Seek) {
-                            val deltaMs = calculateSeekDeltaMs(
-                                distanceX = seekDistanceX,
-                                containerWidth = size.width.toFloat(),
-                                seekIntervalSeconds = currentSeekInterval
-                            )
-                            if (deltaMs != 0L) {
-                                currentSeekCommit(deltaMs)
-                            }
+                            currentSeekCommit(lastSeekDeltaMs)
                         }
                         gestureMode = null
                         overlayText = null
+                        lastSeekDeltaMs = 0L
                     },
                     onDragCancel = {
+                        if (gestureMode == GestureMode.Seek) {
+                            currentSeekCommit(lastSeekDeltaMs)
+                        }
                         gestureMode = null
                         overlayText = null
+                        lastSeekDeltaMs = 0L
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
@@ -124,6 +132,10 @@ fun GestureOverlay(
                                     containerWidth = size.width.toFloat(),
                                     seekIntervalSeconds = currentSeekInterval
                                 )
+                                if (deltaMs != lastSeekDeltaMs) {
+                                    lastSeekDeltaMs = deltaMs
+                                    currentSeekPreview(deltaMs)
+                                }
                                 val sign = if (deltaMs >= 0) "+" else ""
                                 overlayText = "シーク ${sign}${deltaMs / 1000}s"
                             }
@@ -173,7 +185,7 @@ private fun calculateSeekDeltaMs(
 ): Long {
     if (containerWidth <= 0f) return 0L
 
-    val stepWidth = (containerWidth * 0.18f).coerceAtLeast(72f)
-    val steps = (distanceX / stepWidth).roundToLong().coerceIn(-8L, 8L)
+    val stepWidth = (containerWidth * 0.12f).coerceAtLeast(56f)
+    val steps = (distanceX / stepWidth).roundToLong().coerceIn(-12L, 12L)
     return steps * seekIntervalSeconds * 1000L
 }

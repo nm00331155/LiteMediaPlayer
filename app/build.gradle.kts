@@ -98,8 +98,6 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("androidx.biometric:biometric:1.2.0-alpha05")
-    implementation("com.hierynomus:smbj:0.13.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.github.junrar:junrar:7.5.5")
 
     testImplementation("junit:junit:4.13.2")
