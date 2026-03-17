@@ -201,12 +201,6 @@ fun AppNavigation(appSettingsStore: AppSettingsStore) {
 
             composable(MainTab.NETWORK.route) {
                 ExplorerManagementScreen(
-                    onOpenComicFolders = {
-                        navController.navigate("comic_folder_manager")
-                    },
-                    onOpenPlayerFolders = {
-                        navController.navigate("player_folders")
-                    },
                     onOpenNetworkExplorer = {
                         navController.navigate("network_browser")
                     }

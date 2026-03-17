@@ -100,9 +100,16 @@ class ComicSettings @Inject constructor(
                 readingDirection = prefs[Keys.READING_DIRECTION]
                     ?.toEnumOrDefault(ReadingDirection.RTL)
                     ?: ReadingDirection.RTL,
-                animation = prefs[Keys.PAGE_ANIMATION]
+                animation = (prefs[Keys.PAGE_ANIMATION]
                     ?.toEnumOrDefault(PageAnimation.SLIDE)
-                    ?: PageAnimation.SLIDE,
+                    ?: PageAnimation.SLIDE)
+                    .let { animation ->
+                        if (animation == PageAnimation.CURL) {
+                            PageAnimation.SLIDE
+                        } else {
+                            animation
+                        }
+                    },
                 animationSpeedMs = (prefs[Keys.ANIMATION_SPEED_MS] ?: 300).coerceIn(
                     ComicSettingsDefaults.ANIMATION_SPEED_MIN,
                     ComicSettingsDefaults.ANIMATION_SPEED_MAX
@@ -300,7 +307,11 @@ class ComicSettings @Inject constructor(
 
     suspend fun updateAnimation(animation: PageAnimation) {
         context.comicDataStore.edit { prefs ->
-            prefs[Keys.PAGE_ANIMATION] = animation.name
+            prefs[Keys.PAGE_ANIMATION] = if (animation == PageAnimation.CURL) {
+                PageAnimation.SLIDE.name
+            } else {
+                animation.name
+            }
         }
     }
 

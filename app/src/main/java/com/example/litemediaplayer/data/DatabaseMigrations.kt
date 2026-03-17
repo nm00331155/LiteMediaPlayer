@@ -49,6 +49,18 @@ object DatabaseMigrations {
         }
     }
 
+    val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            migrateVideoFolders(db)
+            createComicBooksTable(db)
+            createLockConfigTable(db)
+            createNetworkServerTable(db)
+            createComicFoldersTable(db)
+            ensureComicBookFolderIdColumn(db)
+            createComicProgressTable(db)
+        }
+    }
+
     private fun migrateVideoFolders(database: SupportSQLiteDatabase) {
         if (!hasTable(database, "video_folders")) {
             database.execSQL(
@@ -155,6 +167,30 @@ object DatabaseMigrations {
         )
         database.execSQL(
             "CREATE UNIQUE INDEX IF NOT EXISTS `index_comic_folders_treeUri` ON `comic_folders` (`treeUri`)"
+        )
+    }
+
+    private fun createComicProgressTable(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `comic_progress_entries` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `sourceUri` TEXT,
+                `title` TEXT NOT NULL,
+                `normalizedTitle` TEXT NOT NULL,
+                `sourceType` TEXT NOT NULL,
+                `totalPages` INTEGER NOT NULL,
+                `lastReadPage` INTEGER NOT NULL,
+                `readStatus` TEXT NOT NULL,
+                `updatedAt` INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        database.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_comic_progress_entries_sourceUri` ON `comic_progress_entries` (`sourceUri`)"
+        )
+        database.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_comic_progress_entries_normalizedTitle_sourceType` ON `comic_progress_entries` (`normalizedTitle`, `sourceType`)"
         )
     }
 

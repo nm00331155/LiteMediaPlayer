@@ -38,6 +38,24 @@ class DatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun v6to7_addsComicProgressTable() {
+        val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
+        createLegacyVersion6Database(context)
+
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
+            .addMigrations(DatabaseMigrations.MIGRATION_6_7)
+            .build()
+        val migrated = db.openHelper.writableDatabase
+        try {
+            assertTrue(hasTable(migrated, "comic_progress_entries"))
+            assertTrue(hasColumn(migrated, "comic_progress_entries", "normalizedTitle"))
+            assertTrue(hasColumn(migrated, "comic_progress_entries", "updatedAt"))
+        } finally {
+            db.close()
+        }
+    }
+
     private fun createLegacyVersion5Database(context: Context) {
         context.deleteDatabase(dbName)
         val dbFile = context.getDatabasePath(dbName)
@@ -48,6 +66,21 @@ class DatabaseMigrationTest {
             createVersion5Schema(sqlite)
             insertVersion5SeedData(sqlite)
             sqlite.version = 5
+        } finally {
+            sqlite.close()
+        }
+    }
+
+    private fun createLegacyVersion6Database(context: Context) {
+        context.deleteDatabase(dbName)
+        val dbFile = context.getDatabasePath(dbName)
+        dbFile.parentFile?.mkdirs()
+
+        val sqlite = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
+        try {
+            createVersion6Schema(sqlite)
+            insertVersion6SeedData(sqlite)
+            sqlite.version = 6
         } finally {
             sqlite.close()
         }
@@ -124,6 +157,28 @@ class DatabaseMigrationTest {
         )
     }
 
+    private fun createVersion6Schema(db: SQLiteDatabase) {
+        createVersion5Schema(db)
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `comic_folders` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `displayName` TEXT NOT NULL,
+                `treeUri` TEXT NOT NULL,
+                `coverUri` TEXT,
+                `bookCount` INTEGER NOT NULL DEFAULT 0,
+                `createdAt` INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_comic_folders_treeUri` ON `comic_folders` (`treeUri`)"
+        )
+        db.execSQL(
+            "ALTER TABLE `comic_books` ADD COLUMN `folderId` INTEGER NOT NULL DEFAULT 0"
+        )
+    }
+
     private fun insertVersion5SeedData(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -142,6 +197,19 @@ class DatabaseMigrationTest {
                 0, 10, 'UNREAD', 1700000000000
             )
             """.trimIndent()
+        )
+    }
+
+    private fun insertVersion6SeedData(db: SQLiteDatabase) {
+        insertVersion5SeedData(db)
+        db.execSQL(
+            """
+            INSERT INTO `comic_folders` (`id`, `displayName`, `treeUri`, `coverUri`, `bookCount`, `createdAt`)
+            VALUES (1, 'Books', 'content://comic-tree', NULL, 1, 1700000000000)
+            """.trimIndent()
+        )
+        db.execSQL(
+            "UPDATE `comic_books` SET `folderId` = 1 WHERE `id` = 1"
         )
     }
 

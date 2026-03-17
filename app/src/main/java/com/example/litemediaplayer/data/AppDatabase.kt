@@ -10,16 +10,18 @@ import com.example.litemediaplayer.network.NetworkServerDao
         VideoFolder::class,
         ComicFolder::class,
         ComicBook::class,
+        ComicProgressEntry::class,
         LockConfig::class,
         NetworkServer::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun videoFolderDao(): VideoFolderDao
     abstract fun comicFolderDao(): ComicFolderDao
     abstract fun comicBookDao(): ComicBookDao
+    abstract fun comicProgressDao(): ComicProgressDao
     abstract fun lockConfigDao(): LockConfigDao
     abstract fun networkServerDao(): NetworkServerDao
 }

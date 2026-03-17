@@ -2,6 +2,7 @@ package com.example.litemediaplayer.comic
 
 import com.example.litemediaplayer.data.ComicBook
 import com.example.litemediaplayer.data.ComicBookDao
+import com.example.litemediaplayer.data.ComicProgressEntry
 import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,7 +25,7 @@ internal data class ComicProgressImportResult(
     val skippedCount: Int
 )
 
-private data class MergedComicProgress(
+internal data class MergedComicProgress(
     val lastReadPage: Int,
     val totalPages: Int,
     val readStatus: String
@@ -149,9 +150,26 @@ internal suspend fun importComicProgressItems(
     )
 }
 
-private fun ComicBook.toProgressTransferItemOrNull(): ComicProgressTransferItem? {
-    val hasProgress = lastReadPage > 0 || readStatus != "UNREAD"
-    if (!hasProgress) {
+internal fun ComicProgressTransferItem.hasProgress(): Boolean {
+    return lastReadPage > 0 || readStatus != "UNREAD"
+}
+
+internal fun ComicBook.toProgressTransferItemOrNull(): ComicProgressTransferItem? {
+    if (!hasProgress(lastReadPage, readStatus)) {
+        return null
+    }
+
+    return ComicProgressTransferItem(
+        title = title,
+        sourceType = sourceType,
+        totalPages = totalPages.coerceAtLeast(0),
+        lastReadPage = lastReadPage.coerceAtLeast(0),
+        readStatus = readStatus.ifBlank { "UNREAD" }
+    )
+}
+
+internal fun ComicProgressEntry.toProgressTransferItemOrNull(): ComicProgressTransferItem? {
+    if (!hasProgress(lastReadPage, readStatus)) {
         return null
     }
 
@@ -186,7 +204,7 @@ private fun JSONArray.toProgressTransferItems(): List<ComicProgressTransferItem>
     }
 }
 
-private fun findBestProgressTarget(
+internal fun findBestProgressTarget(
     localBooks: List<ComicBook>,
     incoming: ComicProgressTransferItem
 ): ComicBook? {
@@ -204,18 +222,44 @@ private fun findBestProgressTarget(
     }
 }
 
-private fun mergeProgress(
+internal fun mergeProgress(
     local: ComicBook,
     incoming: ComicProgressTransferItem
 ): MergedComicProgress? {
-    val resolvedTotalPages = maxOf(local.totalPages, incoming.totalPages)
-    val localPage = normalizeProgressPage(local.lastReadPage, local.totalPages, local.readStatus)
+    return mergeProgress(
+        localLastReadPage = local.lastReadPage,
+        localTotalPages = local.totalPages,
+        localReadStatus = local.readStatus,
+        incoming = incoming
+    )
+}
+
+internal fun mergeProgress(
+    local: ComicProgressEntry,
+    incoming: ComicProgressTransferItem
+): MergedComicProgress? {
+    return mergeProgress(
+        localLastReadPage = local.lastReadPage,
+        localTotalPages = local.totalPages,
+        localReadStatus = local.readStatus,
+        incoming = incoming
+    )
+}
+
+internal fun mergeProgress(
+    localLastReadPage: Int,
+    localTotalPages: Int,
+    localReadStatus: String,
+    incoming: ComicProgressTransferItem
+): MergedComicProgress? {
+    val resolvedTotalPages = maxOf(localTotalPages, incoming.totalPages)
+    val localPage = normalizeProgressPage(localLastReadPage, localTotalPages, localReadStatus)
     var mergedPage = maxOf(
         localPage,
         normalizeProgressPage(incoming.lastReadPage, incoming.totalPages, incoming.readStatus)
     )
 
-    val shouldMarkRead = local.readStatus == "READ" || incoming.readStatus == "READ"
+    val shouldMarkRead = localReadStatus == "READ" || incoming.readStatus == "READ"
     if (shouldMarkRead && resolvedTotalPages > 0) {
         mergedPage = maxOf(mergedPage, resolvedTotalPages - 1)
     }
@@ -229,7 +273,7 @@ private fun mergeProgress(
     val mergedStatus = when {
         shouldMarkRead -> "READ"
         safePage > 0 -> "IN_PROGRESS"
-        local.readStatus == "IN_PROGRESS" || incoming.readStatus == "IN_PROGRESS" -> {
+        localReadStatus == "IN_PROGRESS" || incoming.readStatus == "IN_PROGRESS" -> {
             "IN_PROGRESS"
         }
 
@@ -237,9 +281,9 @@ private fun mergeProgress(
     }
 
     if (
-        safePage == local.lastReadPage &&
-        resolvedTotalPages == local.totalPages &&
-        mergedStatus == local.readStatus
+        safePage == localLastReadPage &&
+        resolvedTotalPages == localTotalPages &&
+        mergedStatus == localReadStatus
     ) {
         return null
     }
@@ -251,7 +295,7 @@ private fun mergeProgress(
     )
 }
 
-private fun normalizeProgressPage(currentPage: Int, totalPages: Int, readStatus: String): Int {
+internal fun normalizeProgressPage(currentPage: Int, totalPages: Int, readStatus: String): Int {
     if (readStatus == "READ" && totalPages > 0) {
         return (totalPages - 1).coerceAtLeast(0)
     }
@@ -263,7 +307,7 @@ private fun normalizeProgressPage(currentPage: Int, totalPages: Int, readStatus:
     }
 }
 
-private fun normalizeComicTitle(title: String): String {
+internal fun normalizeComicTitle(title: String): String {
     val trimmed = when {
         title.endsWith(".zip", ignoreCase = true) -> title.dropLast(4)
         title.endsWith(".cbz", ignoreCase = true) -> title.dropLast(4)
@@ -281,6 +325,10 @@ private fun normalizeComicTitle(title: String): String {
         .replace(COMIC_PROGRESS_TITLE_SANITIZER, "")
 }
 
-private fun pageCountsMatch(localPages: Int, incomingPages: Int): Boolean {
+internal fun pageCountsMatch(localPages: Int, incomingPages: Int): Boolean {
     return localPages <= 0 || incomingPages <= 0 || localPages == incomingPages
+}
+
+internal fun hasProgress(lastReadPage: Int, readStatus: String): Boolean {
+    return lastReadPage > 0 || readStatus != "UNREAD"
 }

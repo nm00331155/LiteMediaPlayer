@@ -495,14 +495,14 @@ private fun ComicSettingsContent(
         onReset = { onAnimationChange(defaultSettings.animation) }
     )
     OptionChips(
-        options = PageAnimation.entries,
+        options = PageAnimation.entries.filterNot { it == PageAnimation.CURL },
         selected = settings.animation,
         label = {
             when (it) {
                 PageAnimation.SLIDE -> "スライド"
-                PageAnimation.CURL -> "カール"
                 PageAnimation.FADE -> "フェード"
                 PageAnimation.NONE -> "なし"
+                PageAnimation.CURL -> "スライド"
             }
         },
         onSelect = onAnimationChange

@@ -120,6 +120,7 @@ class ComicReaderViewModel @Inject constructor(
     private val comicFolderDao: ComicFolderDao,
     private val comicBookDao: ComicBookDao,
     private val comicSettings: ComicSettings,
+    private val comicProgressRepository: ComicProgressRepository,
     private val comicProgressSyncStore: ComicProgressSyncStore,
     private val comicProgressLanSyncManager: ComicProgressLanSyncManager,
     private val pageProcessor: PageProcessor,
@@ -131,6 +132,7 @@ class ComicReaderViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ComicReaderUiState())
     val uiState: StateFlow<ComicReaderUiState> = _uiState.asStateFlow()
     private var backgroundPageLoadJob: Job? = null
+    private var bookProgressSyncJob: Job? = null
     private var pageLoadGeneration: Long = 0L
 
     init {
@@ -161,6 +163,10 @@ class ComicReaderViewModel @Inject constructor(
                 }
             }.collect { books ->
                 _uiState.update { it.copy(books = books) }
+                bookProgressSyncJob?.cancel()
+                bookProgressSyncJob = viewModelScope.launch(Dispatchers.IO) {
+                    comicProgressRepository.syncProgressToBooks(books)
+                }
             }
         }
         viewModelScope.launch {
@@ -513,6 +519,13 @@ class ComicReaderViewModel @Inject constructor(
                     return@launch
                 }
 
+                val storedProgress = withContext(Dispatchers.IO) {
+                    comicProgressRepository.resolveProgressForBook(book)
+                }
+                val storedPage = storedProgress?.lastReadPage ?: book.lastReadPage
+                val storedStatus = storedProgress?.readStatus ?: book.readStatus
+                val storedTotalPages = storedProgress?.totalPages ?: book.totalPages
+
                 val settings = _uiState.value.settings
                 if (shouldPreprocessPages(settings)) {
                     val progressiveResult = withContext(Dispatchers.IO) {
@@ -528,10 +541,11 @@ class ComicReaderViewModel @Inject constructor(
                         return@launch
                     }
 
-                    val initialPage = book.lastReadPage.coerceIn(
-                        0,
-                        progressiveResult.initialPages.lastIndex
-                    )
+                    val initialPage = normalizeProgressPage(
+                        currentPage = storedPage,
+                        totalPages = maxOf(progressiveResult.totalPageHint, storedTotalPages),
+                        readStatus = storedStatus
+                    ).coerceIn(0, progressiveResult.initialPages.lastIndex)
                     _uiState.update {
                         it.copy(
                             currentBookId = bookId,
@@ -544,7 +558,7 @@ class ComicReaderViewModel @Inject constructor(
                     }
 
                     saveProgress(
-                        bookId = bookId,
+                        book = book,
                         currentPage = initialPage,
                         totalPages = progressiveResult.totalPageHint
                     )
@@ -577,7 +591,11 @@ class ComicReaderViewModel @Inject constructor(
                         return@launch
                     }
 
-                    val initialPage = book.lastReadPage.coerceIn(0, pages.lastIndex)
+                    val initialPage = normalizeProgressPage(
+                        currentPage = storedPage,
+                        totalPages = maxOf(pages.size, storedTotalPages),
+                        readStatus = storedStatus
+                    ).coerceIn(0, pages.lastIndex)
                     _uiState.update {
                         it.copy(
                             currentBookId = bookId,
@@ -589,7 +607,7 @@ class ComicReaderViewModel @Inject constructor(
                         )
                     }
 
-                    saveProgress(bookId = bookId, currentPage = initialPage, totalPages = pages.size)
+                    saveProgress(book = book, currentPage = initialPage, totalPages = pages.size)
                 }
             } catch (_: OutOfMemoryError) {
                 AppLogger.e("ComicReader", "openBook OOM: $bookId")
@@ -618,7 +636,7 @@ class ComicReaderViewModel @Inject constructor(
         val nextIndex = (state.currentPage + 1).coerceAtMost(state.pages.lastIndex)
         _uiState.update { it.copy(currentPage = nextIndex) }
         saveProgress(
-            bookId = state.currentBookId ?: return,
+            book = resolveCurrentBook(state) ?: return,
             currentPage = nextIndex,
             totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
@@ -633,7 +651,7 @@ class ComicReaderViewModel @Inject constructor(
         val previousIndex = (state.currentPage - 1).coerceAtLeast(0)
         _uiState.update { it.copy(currentPage = previousIndex) }
         saveProgress(
-            bookId = state.currentBookId ?: return,
+            book = resolveCurrentBook(state) ?: return,
             currentPage = previousIndex,
             totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
@@ -648,7 +666,7 @@ class ComicReaderViewModel @Inject constructor(
         val safeIndex = pageIndex.coerceIn(0, state.pages.lastIndex)
         _uiState.update { it.copy(currentPage = safeIndex) }
         saveProgress(
-            bookId = state.currentBookId ?: return,
+            book = resolveCurrentBook(state) ?: return,
             currentPage = safeIndex,
             totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
@@ -664,7 +682,7 @@ class ComicReaderViewModel @Inject constructor(
         val target = (state.currentPage + safeCount).coerceAtMost(state.pages.lastIndex)
         _uiState.update { it.copy(currentPage = target) }
         saveProgress(
-            bookId = state.currentBookId ?: return,
+            book = resolveCurrentBook(state) ?: return,
             currentPage = target,
             totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
@@ -680,7 +698,7 @@ class ComicReaderViewModel @Inject constructor(
         val target = (state.currentPage - safeCount).coerceAtLeast(0)
         _uiState.update { it.copy(currentPage = target) }
         saveProgress(
-            bookId = state.currentBookId ?: return,
+            book = resolveCurrentBook(state) ?: return,
             currentPage = target,
             totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
         )
@@ -710,8 +728,7 @@ class ComicReaderViewModel @Inject constructor(
     suspend fun buildProgressShareIntent(): Intent? = withContext(Dispatchers.IO) {
         runCatching {
             val syncSettings = comicProgressSyncStore.settingsFlow.first()
-            val payload = buildComicProgressPayload(
-                comicBookDao = comicBookDao,
+            val payload = comicProgressRepository.buildPayload(
                 sourceDeviceId = syncSettings.localDeviceId,
                 sourceDeviceName = syncSettings.localDeviceName
             )
@@ -818,10 +835,7 @@ class ComicReaderViewModel @Inject constructor(
                     ?.use { reader -> reader.readText() }
                     ?: error("ファイルを読み込めませんでした")
 
-                val result = importComicProgressPayload(
-                    comicBookDao = comicBookDao,
-                    payloadText = jsonText
-                )
+                val result = comicProgressRepository.importPayload(jsonText)
 
                 if (result.updatedCount == 0) {
                     _uiState.update {
@@ -1366,7 +1380,7 @@ class ComicReaderViewModel @Inject constructor(
                 val state = _uiState.value
                 if (state.currentBookId == bookId && loadGeneration == pageLoadGeneration) {
                     saveProgress(
-                        bookId = bookId,
+                        book = resolveCurrentBook(state) ?: return@launch,
                         currentPage = state.currentPage.coerceAtMost((state.totalPageCount - 1).coerceAtLeast(0)),
                         totalPages = state.totalPageCount.coerceAtLeast(state.pages.size)
                     )
@@ -1879,11 +1893,16 @@ class ComicReaderViewModel @Inject constructor(
         }
     }
 
-    private fun saveProgress(bookId: Long, currentPage: Int, totalPages: Int) {
+    private fun resolveCurrentBook(state: ComicReaderUiState): ComicBook? {
+        val currentBookId = state.currentBookId ?: return null
+        return state.books.firstOrNull { it.id == currentBookId }
+    }
+
+    private fun saveProgress(book: ComicBook, currentPage: Int, totalPages: Int) {
         viewModelScope.launch(Dispatchers.IO) {
-            comicBookDao.updateProgress(
-                bookId = bookId,
-                lastReadPage = currentPage,
+            comicProgressRepository.saveProgress(
+                book = book,
+                currentPage = currentPage,
                 totalPages = totalPages,
                 readStatus = calcReadStatus(currentPage, totalPages)
             )

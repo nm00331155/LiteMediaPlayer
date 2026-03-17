@@ -1,6 +1,5 @@
 package com.example.litemediaplayer.comic
 
-import com.example.litemediaplayer.data.ComicBookDao
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -43,7 +42,7 @@ data class ComicSyncPushResult(
 @Singleton
 class ComicProgressLanSyncManager @Inject constructor(
     @ApplicationContext private val context: android.content.Context,
-    private val comicBookDao: ComicBookDao,
+    private val comicProgressRepository: ComicProgressRepository,
     private val syncStore: ComicProgressSyncStore
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -240,7 +239,7 @@ class ComicProgressLanSyncManager @Inject constructor(
                 request.method == "POST" && request.path == SYNC_PATH -> {
                     val payloadText = request.body.toString(Charsets.UTF_8)
                     val result = runCatching {
-                        importComicProgressPayload(comicBookDao, payloadText)
+                        comicProgressRepository.importPayload(payloadText)
                     }.getOrElse { error ->
                         writeHttpResponse(
                             output = output,

@@ -41,7 +41,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,12 +50,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -91,14 +88,7 @@ fun ComicReaderScreen(
     var pageTurnDragOffset by remember(uiState.currentBookId, uiState.currentPage) {
         mutableFloatStateOf(0f)
     }
-    var pageTurnSettleTarget by remember(uiState.currentBookId, uiState.currentPage) {
-        mutableFloatStateOf(0f)
-    }
     var isPageTurnDragging by remember { mutableStateOf(false) }
-    var pendingPageTurnAction by remember(uiState.currentBookId, uiState.currentPage) {
-        mutableStateOf<PageTurnAction?>(null)
-    }
-    var pageTurnWidthPx by remember { mutableIntStateOf(0) }
     val focusRequester = remember { FocusRequester() }
 
     val touchZone = remember(uiState.settings.touchZone, uiState.settings.readingDirection) {
@@ -107,21 +97,21 @@ fun ComicReaderScreen(
     val pages = uiState.pages
 
     val pageTurnOffset by animateFloatAsState(
-        targetValue = if (isPageTurnDragging) pageTurnDragOffset else pageTurnSettleTarget,
-        animationSpec = if (isPageTurnDragging) snap() else tween(durationMillis = 180),
-        label = "comicPageTurnOffset",
-        finishedListener = { finalValue ->
-            val action = pendingPageTurnAction ?: return@animateFloatAsState
-            if (pageTurnWidthPx > 0 && abs(finalValue) >= pageTurnWidthPx * 0.95f) {
-                pendingPageTurnAction = null
-                pageTurnDragOffset = 0f
-                pageTurnSettleTarget = 0f
-                when (action) {
-                    PageTurnAction.NEXT -> viewModel.nextPage()
-                    PageTurnAction.PREVIOUS -> viewModel.previousPage()
-                }
-            }
-        }
+        targetValue = if (
+            isPageTurnDragging && uiState.settings.animation != PageAnimation.NONE
+        ) {
+            pageTurnDragOffset
+        } else {
+            0f
+        },
+        animationSpec = if (
+            isPageTurnDragging || uiState.settings.animation == PageAnimation.NONE
+        ) {
+            snap()
+        } else {
+            tween(durationMillis = uiState.settings.animationSpeedMs.coerceIn(80, 320))
+        },
+        label = "comicPageTurnOffset"
     )
 
     fun resolvePageTurnAction(offsetX: Float): PageTurnAction? {
@@ -135,13 +125,11 @@ fun ComicReaderScreen(
         return if (nextPage) PageTurnAction.NEXT else PageTurnAction.PREVIOUS
     }
 
-    fun resolvePreviewPage(offsetX: Float): ComicPage? {
-        val action = resolvePageTurnAction(offsetX) ?: return null
-        val index = when (action) {
-            PageTurnAction.NEXT -> uiState.currentPage + 1
-            PageTurnAction.PREVIOUS -> uiState.currentPage - 1
+    fun canTurnPage(action: PageTurnAction): Boolean {
+        return when (action) {
+            PageTurnAction.NEXT -> uiState.currentPage < pages.lastIndex
+            PageTurnAction.PREVIOUS -> uiState.currentPage > 0
         }
-        return pages.getOrNull(index)
     }
 
     BackHandler {
@@ -160,9 +148,7 @@ fun ComicReaderScreen(
 
     LaunchedEffect(uiState.currentBookId, uiState.currentPage) {
         pageTurnDragOffset = 0f
-        pageTurnSettleTarget = 0f
         isPageTurnDragging = false
-        pendingPageTurnAction = null
     }
 
     LaunchedEffect(
@@ -241,8 +227,6 @@ fun ComicReaderScreen(
     }
 
     val currentPage = pages.getOrNull(uiState.currentPage)
-    val previewPage = resolvePreviewPage(pageTurnOffset)
-    val showPageTurnPreview = abs(pageTurnOffset) > 0.5f && previewPage != null
 
     if (showJumpDialog) {
         JumpToPageDialog(
@@ -435,81 +419,72 @@ fun ComicReaderScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .onSizeChanged { pageTurnWidthPx = it.width }
                                 .pointerInput(
                                     uiState.currentBookId,
                                     uiState.currentPage,
                                     uiState.settings.readingDirection,
                                     isCurrentPageZoomed,
-                                    pendingPageTurnAction
+                                    uiState.settings.animation
                                 ) {
-                                    if (isCurrentPageZoomed || pendingPageTurnAction != null) {
+                                    if (isCurrentPageZoomed) {
                                         return@pointerInput
                                     }
 
                                     var accumulatedDragX = 0f
                                     val swipeThreshold = size.width * 0.12f
+                                    val maxDragOffset = size.width * 0.18f
                                     detectHorizontalDragGestures(
                                         onDragStart = {
                                             accumulatedDragX = pageTurnOffset
                                             isPageTurnDragging = true
-                                            pendingPageTurnAction = null
                                         },
                                         onHorizontalDrag = { change, dragAmount ->
-                                            val candidate = (accumulatedDragX + dragAmount)
-                                                .coerceIn(-size.width.toFloat(), size.width.toFloat())
-                                            accumulatedDragX = if (resolvePreviewPage(candidate) != null) {
-                                                candidate
+                                            val rawCandidate = accumulatedDragX + dragAmount
+                                            val action = resolvePageTurnAction(rawCandidate)
+                                            accumulatedDragX = if (action != null && canTurnPage(action)) {
+                                                rawCandidate.coerceIn(-maxDragOffset, maxDragOffset)
                                             } else {
-                                                candidate * 0.2f
+                                                rawCandidate.coerceIn(-maxDragOffset, maxDragOffset) * 0.25f
                                             }
                                             pageTurnDragOffset = accumulatedDragX
                                             change.consume()
                                         },
                                         onDragEnd = {
                                             val dragX = pageTurnDragOffset
-                                            val isSwipe = abs(dragX) >= swipeThreshold &&
-                                                resolvePreviewPage(dragX) != null
+                                            val action = resolvePageTurnAction(dragX)
+                                            val isSwipe = action != null &&
+                                                canTurnPage(action) &&
+                                                abs(dragX) >= swipeThreshold
                                             accumulatedDragX = 0f
                                             isPageTurnDragging = false
                                             if (isSwipe) {
-                                                pendingPageTurnAction = resolvePageTurnAction(dragX)
-                                                pageTurnSettleTarget = if (dragX < 0f) {
-                                                    -size.width.toFloat()
-                                                } else {
-                                                    size.width.toFloat()
+                                                action?.let { resolvedAction ->
+                                                    when (resolvedAction) {
+                                                        PageTurnAction.NEXT -> viewModel.nextPage()
+                                                        PageTurnAction.PREVIOUS -> viewModel.previousPage()
+                                                    }
                                                 }
-                                            } else {
-                                                pendingPageTurnAction = null
-                                                pageTurnSettleTarget = 0f
                                             }
+                                            pageTurnDragOffset = 0f
                                         },
                                         onDragCancel = {
                                             accumulatedDragX = 0f
                                             isPageTurnDragging = false
-                                            pendingPageTurnAction = null
-                                            pageTurnSettleTarget = 0f
+                                            pageTurnDragOffset = 0f
                                         }
                                     )
                                 }
                         ) {
-                            if (showPageTurnPreview) {
-                                PageRenderer(
-                                    model = previewPage!!.model,
-                                    maxZoom = uiState.settings.zoomMax,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(uiState.settings.pagePaddingDp.dp)
-                                )
-                            }
-
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .graphicsLayer {
                                         translationX = pageTurnOffset
-                                        shadowElevation = if (showPageTurnPreview) 24f else 0f
-                                        scaleY = if (showPageTurnPreview) 0.995f else 1f
+                                        alpha = if (uiState.settings.animation == PageAnimation.FADE) {
+                                            (1f - (abs(pageTurnOffset) / 220f)).coerceIn(0.72f, 1f)
+                                        } else {
+                                            1f
+                                        }
                                     }
                             ) {
                                 PageRenderer(
@@ -526,38 +501,6 @@ fun ComicReaderScreen(
                                         .fillMaxSize()
                                         .padding(uiState.settings.pagePaddingDp.dp)
                                 )
-
-                                if (showPageTurnPreview) {
-                                    Box(
-                                        modifier = Modifier
-                                            .align(
-                                                if (pageTurnOffset < 0f) {
-                                                    Alignment.CenterEnd
-                                                } else {
-                                                    Alignment.CenterStart
-                                                }
-                                            )
-                                            .fillMaxHeight()
-                                            .fillMaxWidth(0.03f)
-                                            .background(
-                                                brush = if (pageTurnOffset < 0f) {
-                                                    Brush.horizontalGradient(
-                                                        listOf(
-                                                            Color.Transparent,
-                                                            Color.Black.copy(alpha = 0.28f)
-                                                        )
-                                                    )
-                                                } else {
-                                                    Brush.horizontalGradient(
-                                                        listOf(
-                                                            Color.Black.copy(alpha = 0.28f),
-                                                            Color.Transparent
-                                                        )
-                                                    )
-                                                }
-                                            )
-                                    )
-                                }
                             }
 
                             if (isZoneEditMode) {
@@ -567,7 +510,7 @@ fun ComicReaderScreen(
                                     onZoneClick = { target -> editingZone = target },
                                     modifier = Modifier.fillMaxSize()
                                 )
-                            } else if (!isCurrentPageZoomed && !showPageTurnPreview) {
+                            } else if (!isCurrentPageZoomed) {
                                 ComicTouchZoneOverlay(
                                     layout = touchZone.layout,
                                     longPressMs = touchZone.longPressMs.toLong(),
